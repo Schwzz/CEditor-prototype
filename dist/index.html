@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#17191a" />
+    <meta
+      name="description"
+      content="A private playground for code-based motion. Write a score, see the timeline, remix a template."
+    />
+    <title>Framecode — Motion, written.</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d6fa69'/%3E%3Cpath d='M9 8h15v4H13v4h9v4h-9v6H9z' fill='%2317191a'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <svg class="icons" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <symbol id="i-code" viewBox="0 0 24 24">
+          <path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18" />
+        </symbol>
+        <symbol id="i-play" viewBox="0 0 24 24">
+          <path d="m8 5 11 7-11 7z" />
+        </symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24">
+          <path d="M8 5v14M16 5v14" />
+        </symbol>
+        <symbol id="i-share" viewBox="0 0 24 24">
+          <path d="M12 15V3m-4 4 4-4 4 4M5 12v8h14v-8" />
+        </symbol>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="4" y="4" width="6" height="6" rx="1" />
+          <rect x="14" y="4" width="6" height="6" rx="1" />
+          <rect x="4" y="14" width="6" height="6" rx="1" />
+          <rect x="14" y="14" width="6" height="6" rx="1" />
+        </symbol>
+        <symbol id="i-reset" viewBox="0 0 24 24">
+          <path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" />
+        </symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24">
+          <rect x="6" y="10" width="12" height="10" rx="2" />
+          <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+        </symbol>
+        <symbol id="i-skip" viewBox="0 0 24 24">
+          <path d="M5 5v14m14-14L8 12l11 7z" />
+        </symbol>
+        <symbol id="i-loop" viewBox="0 0 24 24">
+          <path d="M4 10V6h14l-3-3M20 14v4H6l3 3M18 6l-3 3M6 18l3-3" />
+        </symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M5 12h14m-5-5 5 5-5 5" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="i-help" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5m0 3h.01" />
+        </symbol>
+        <symbol id="i-spark" viewBox="0 0 24 24">
+          <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z" />
+        </symbol>
+      </defs>
+    </svg>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Framecode home"
+        ><span class="brand-mark">f<span>↗</span></span
+        >framecode<span class="version">LAB</span></a
+      >
+      <div class="breadcrumb">
+        <span>Playground</span><span>/</span
+        ><strong id="projectName">Orbit study</strong>
+      </div>
+      <div class="header-actions">
+        <span class="private-label"
+          ><svg><use href="#i-lock" /></svg>Private prototype</span
+        ><button class="button quiet" id="openTemplates">
+          <svg><use href="#i-grid" /></svg>Templates</button
+        ><button class="button primary" id="openShare">
+          <svg><use href="#i-share" /></svg>Share template
+        </button>
+      </div>
+    </header>
+    <main>
+      <div class="intro">
+        <div>
+          <span class="eyebrow">MOTION, WRITTEN.</span>
+          <h1>A little code. A moving idea.</h1>
+        </div>
+        <button class="button quiet help" id="openHelp">
+          <svg><use href="#i-help" /></svg>How it works
+        </button>
+      </div>
+      <div class="workspace">
+        <section
+          class="panel source-panel"
+          aria-label="Composition code editor"
+        >
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg><use href="#i-code" /></svg><span>Composition</span
+              ><span class="file-label">.frame</span>
+            </div>
+            <div class="source-actions">
+              <button
+                class="icon-button"
+                id="reset"
+                title="Reset to original example"
+                aria-label="Reset example"
+              >
+                <svg><use href="#i-reset" /></svg></button
+              ><button class="button run" id="run">
+                <svg><use href="#i-play" /></svg>Run<span class="keyhint"
+                  >⌘ ↵</span
+                >
+              </button>
+            </div>
+          </div>
+          <div class="code-wrap" id="codeWrap">
+            <div class="line-numbers" id="lineNumbers" aria-hidden="true"></div>
+            <div class="code-surface">
+              <pre id="highlight" aria-hidden="true"></pre>
+              <textarea
+                id="source"
+                aria-label="Composition source code"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                wrap="off"
+              ></textarea>
+            </div>
+          </div>
+          <div class="code-status">
+            <span id="compileStatus" role="status"
+              ><span class="status-dot"></span>Live · changes run
+              automatically</span
+            ><span id="lineCount">13 lines</span>
+          </div>
+          <div class="error-box" id="error" hidden role="alert"></div>
+          <div class="source-footnote">
+            <span class="small-icon">↳</span> Edit a value. Watch the timeline
+            follow.
+          </div>
+        </section>
+        <section class="panel preview-panel" aria-label="Motion preview">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="status-dot"></span>Preview
+            </div>
+            <span class="muted mono"
+              >1920 × 1080 <span class="separator">/</span> 30 FPS</span
+            >
+          </div>
+          <div class="stage-area">
+            <div class="preview-caption">
+              <span id="previewLabel">ORBIT STUDY</span
+              ><span id="draftBadge">EXPERIMENT 001</span>
+            </div>
+            <div class="canvas-shell">
+              <canvas
+                id="canvas"
+                width="1920"
+                height="1080"
+                aria-label="Animated composition preview"
+              ></canvas>
+              <div class="paused-chip" id="pausedChip">PAUSED</div>
+            </div>
+            <div class="stage-bottom">
+              <span
+                ><span class="status-dot"></span> Rendered from your code</span
+              ><span>16:9</span>
+            </div>
+          </div>
+          <div class="transport">
+            <div class="transport-left">
+              <button
+                class="icon-button"
+                id="restart"
+                title="Jump to start"
+                aria-label="Jump to start"
+              >
+                <svg><use href="#i-skip" /></svg></button
+              ><button class="play-button" id="play" aria-label="Play preview">
+                <svg><use href="#i-play" /></svg></button
+              ><button
+                class="icon-button active"
+                id="loop"
+                aria-label="Loop preview"
+                aria-pressed="true"
+                title="Loop preview"
+              >
+                <svg><use href="#i-loop" /></svg>
+              </button>
+            </div>
+            <div class="timecode">
+              <strong id="currentTime">00:02.00</strong><span>/</span
+              ><span id="totalTime">00:12.00</span>
+            </div>
+            <span class="space-key">space</span>
+          </div>
+          <input
+            class="seek"
+            id="seek"
+            type="range"
+            min="0"
+            max="12"
+            value="2"
+            step="0.01"
+            aria-label="Preview playhead time in seconds"
+          />
+        </section>
+        <aside class="panel template-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg><use href="#i-spark" /></svg>Template controls
+            </div>
+          </div>
+          <div class="template-body">
+            <div class="template-heading">
+              <span class="eyebrow">MAKE IT YOURS</span>
+              <p>The same composition.<br />Your own signature.</p>
+            </div>
+            <div id="params" class="parameters"></div>
+            <div class="param-note">
+              <svg><use href="#i-code" /></svg
+              ><span
+                >Controls come from <code>param()</code> in your code.</span
+              >
+            </div>
+            <div class="selection-card" id="selectionCard" hidden>
+              <div class="selection-top">
+                <span class="eyebrow">SELECTED CLIP</span
+                ><button
+                  class="icon-button tiny"
+                  id="clearSelection"
+                  aria-label="Clear selected clip"
+                >
+                  <svg><use href="#i-close" /></svg>
+                </button>
+              </div>
+              <strong id="selectedName"></strong>
+              <div class="timing-fields">
+                <label
+                  >Start <span>s</span
+                  ><input
+                    id="clipStart"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    aria-label="Selected clip start in seconds" /></label
+                ><label
+                  >Length <span>s</span
+                  ><input
+                    id="clipDuration"
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    aria-label="Selected clip duration in seconds"
+                /></label>
+              </div>
+            </div>
+          </div>
+          <div class="template-footer">
+            <span id="saveStatus">Draft saved on this device</span>
+          </div>
+        </aside>
+      </div>
+      <section class="panel timeline-panel" aria-label="Composition timeline">
+        <div class="timeline-header">
+          <div class="timeline-title">
+            <span class="panel-title">Timeline</span
+            ><span class="count-badge" id="clipCount">4 clips</span
+            ><span class="timeline-hint">Click to inspect · drag to move</span>
+          </div>
+          <div class="timeline-meta">
+            <span class="link-status">↔ Linked to code</span
+            ><span id="durationLabel">12.0s</span>
+          </div>
+        </div>
+        <div class="timeline-scroll">
+          <div class="timeline-grid" id="timeline">
+            <div class="ruler-row">
+              <div class="track-label ruler-label">
+                TRACK <span>SECONDS →</span>
+              </div>
+              <div class="ruler" id="ruler" title="Click to seek"></div>
+            </div>
+            <div id="tracks"></div>
+            <div class="playhead" id="playhead"><span></span></div>
+          </div>
+        </div>
+        <div class="timeline-footer">
+          <span
+            ><span class="status-dot"></span
+            ><span id="timelineStatus"
+              >Code and timeline are in sync</span
+            ></span
+          ><span class="mono">A SCORE FOR THE SCREEN.</span>
+        </div>
+      </section>
+      <footer class="app-footer">
+        <span>Built to explore an idea.</span
+        ><span
+          >Code → Timeline → Motion <span class="footer-mark">↗</span></span
+        >
+      </footer>
+    </main>
+    <dialog id="templatesDialog" class="modal wide">
+      <div class="modal-heading">
+        <div>
+          <span class="eyebrow">START SOMEWHERE</span>
+          <h2>A score worth remixing.</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close templates">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <p class="modal-description">
+        Small compositions. Open code. Make an editable copy and change the
+        feeling.
+      </p>
+      <div id="templateGallery" class="template-gallery"></div>
+      <p class="dialog-note">
+        Loading a template replaces this draft. Your previous version is
+        available with Undo.
+      </p>
+    </dialog>
+    <dialog id="shareDialog" class="modal">
+      <div class="modal-heading">
+        <div>
+          <span class="eyebrow">FROM COMPOSITION TO TEMPLATE</span>
+          <h2>Pass the idea along.</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close sharing">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="share-card">
+        <span class="share-art">f<span>↗</span></span>
+        <div>
+          <strong id="shareName"></strong><span id="shareDetails"></span>
+        </div>
+        <span class="code-tag">OPEN CODE</span>
+      </div>
+      <p class="modal-description">
+        This snapshot includes the code and exposed parameters. Anyone with site
+        access can open their own editable copy.
+      </p>
+      <label class="field-label" for="shareCode"
+        >Template source <span>SNAPSHOT</span></label
+      ><textarea
+        class="share-code"
+        id="shareCode"
+        readonly
+        spellcheck="false"
+        aria-label="Shared template source"
+      ></textarea>
+      <div class="share-actions">
+        <button class="button secondary" id="copyCode">
+          <svg><use href="#i-code" /></svg>Copy code</button
+        ><button class="button secondary" id="copyLink">
+          <svg><use href="#i-share" /></svg>Copy remix link
+        </button>
+      </div>
+      <button class="button primary full" id="remixSnapshot">
+        Try as an editable copy<svg><use href="#i-arrow" /></svg>
+      </button>
+      <div class="privacy-note">
+        <svg><use href="#i-lock" /></svg>Private link. Your site’s access rules
+        still apply.
+      </div>
+    </dialog>
+    <dialog id="helpDialog" class="modal">
+      <div class="modal-heading">
+        <div>
+          <span class="eyebrow">YOUR FIRST 30 SECONDS</span>
+          <h2>Write. Watch. Remix.</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close help">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <ol class="help-steps">
+        <li>
+          <span>01</span>
+          <div>
+            <strong>Change the score.</strong>
+            <p>
+              Edit the title or a clip’s <code>.at()</code> and
+              <code>.for()</code>. Valid changes run automatically.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span>02</span>
+          <div>
+            <strong>Follow the timeline.</strong>
+            <p>
+              Scrub the ruler, select a clip, or drag it. Timing edits write
+              back into the code.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span>03</span>
+          <div>
+            <strong>Make it reusable.</strong>
+            <p>
+              Adjust template controls, then share a snapshot and try it as an
+              editable copy.
+            </p>
+          </div>
+        </li>
+      </ol>
+      <div class="syntax-note">
+        <strong>A small motion language</strong>
+        <p>
+          <code>scene</code>, <code>text</code> and <code>shape</code> create
+          clips. Text supports
+          <code>.place("left" | "center" | "bottom")</code>; motion supports
+          <code>"rise"</code>, <code>"fade"</code>, <code>"orbit"</code>,
+          <code>"pulse"</code> or <code>"none"</code>. Scenes support
+          <code>.look("orbit" | "pulse" | "grid")</code>. Times are in seconds.
+        </p>
+        <p>
+          This is an interaction prototype with procedural graphics. Media
+          import, audio and video export are outside this demo.
+        </p>
+      </div>
+    </dialog>
+    <div class="toast" id="toast" role="status" hidden>
+      <span id="toastMessage"></span><button id="undo" hidden>Undo</button>
+    </div>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>
