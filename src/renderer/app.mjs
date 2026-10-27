@@ -424,7 +424,7 @@ function scheduleRecovery() {
 }
 store.subscribe((event) => {
   scheduleRender(event);
-  if (event.type !== "selection" && event.type !== "saved") scheduleRecovery();
+  if (!["selection", "saved", "load"].includes(event.type)) scheduleRecovery();
 });
 
 for (const [id, key] of [
@@ -544,6 +544,19 @@ $("saveTemplate").onclick = async () => {
   await runFile(() => saveSnapshot(true));
 };
 
+async function clearRecoveryAfterAdoption() {
+  try {
+    await desktop.clearRecovery();
+    recoveryEnabled = true;
+    return true;
+  } catch (error) {
+    recoveryEnabled = false;
+    toast(
+      "The project is intact. Old recovery could not be removed; automatic recovery is paused.",
+    );
+    return false;
+  }
+}
 async function saveSnapshot(saveAs = false) {
   const snapshot = store.serialize(),
     result = await desktop.saveProject(snapshot, saveAs);
@@ -552,12 +565,14 @@ async function saveSnapshot(saveAs = false) {
   filePath = result.path;
   store.markSaved(snapshot);
   cancelAutosave();
-  if (!store.dirty) await desktop.clearRecovery();
-  else scheduleRecovery();
+  const cleared = !store.dirty ? await clearRecoveryAfterAdoption() : true;
+  if (store.dirty) scheduleRecovery();
   $("saveStatus").textContent = store.dirty
     ? "Saved version · newer changes remain"
-    : "Project saved locally";
-  toast("Saved " + fileName);
+    : cleared
+      ? "Project saved locally"
+      : "Project saved · recovery cleanup failed; autosave paused";
+  if (cleared) toast("Saved " + fileName);
   return true;
 }
 async function guardUnsaved() {
@@ -592,22 +607,27 @@ async function fileCommand(command) {
       const loaded = await desktop.openProject();
       if (!loaded) return false;
       cancelAutosave();
-      await desktop.clearRecovery();
+      // The native save path changed: adopt its document before fallible cleanup.
       fileName = loaded.name;
       filePath = loaded.path;
       store.load(loaded.project);
-      $("saveStatus").textContent = "Project opened locally";
+      const cleared = await clearRecoveryAfterAdoption();
+      $("saveStatus").textContent = cleared
+        ? "Project opened locally"
+        : "Project opened · recovery cleanup failed; autosave paused";
     } else if (command === "new") {
       cancelAutosave();
       await desktop.newProject();
-      await desktop.clearRecovery();
       fileName = "Untitled.framecode.json";
       filePath = null;
       store.load({ source: DEFAULT_SOURCE, lastValid: DEFAULT_SOURCE });
-      $("saveStatus").textContent = "New local project";
+      const cleared = await clearRecoveryAfterAdoption();
+      $("saveStatus").textContent = cleared
+        ? "New local project"
+        : "New project · recovery cleanup failed; autosave paused";
     } else if (command === "close") {
       cancelAutosave();
-      await desktop.clearRecovery();
+      await clearRecoveryAfterAdoption();
       await desktop.setDirty(false, store.model.name);
       await desktop.finishClose();
       return true;

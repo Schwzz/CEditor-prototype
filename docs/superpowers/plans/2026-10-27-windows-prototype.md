@@ -33,11 +33,11 @@
 
 **Interfaces:** `compile(source) -> model`; `updateClip(source,id,properties) -> source`; `resizeClip(source,id,edge,time) -> source`; `splitClip(source,id,time) -> {source,id}`; clipboard and duplicate/delete operations return validated source. `DocumentStore` exposes source/model/error/selected/dirty, commit/undo/redo/select/load/markSaved plus a subscriber.
 
-- [ ] Write failing cases for positions, source offsets, split phase, edge limits, quoted labels, clipboard parameter conflicts, invalid source/history and save-after-new-edits.
-- [ ] Run tests to observe the missing operations fail.
-- [ ] Migrate existing parser/tests, implement atomic source operations and bounded shared history.
-- [ ] Run `npm test`; all core tests must pass.
-- [ ] Commit core changes and record progress.
+- [x] Write failing cases for positions, source offsets, split phase, edge limits, quoted labels, clipboard parameter conflicts, invalid source/history and save-after-new-edits.
+- [x] Run tests to observe the missing operations fail.
+- [x] Migrate existing parser/tests, implement atomic source operations and bounded shared history.
+- [x] Run `npm test`; all core tests must pass.
+- [x] Commit core changes and record progress.
 
 ### Task 2: Native shell and project persistence
 
@@ -45,11 +45,11 @@
 
 **Interfaces:** preload `framecodeDesktop` exposes explicit open/save/new/recovery/clipboard/dirty/confirm/close operations. `ProjectFiles` validates versioned data and writes atomically; caller owns selected native paths. Build emits `build/renderer` and packages only required local assets and desktop/core modules.
 
-- [ ] Write failing tests for project round trips, invalid/oversized/unsupported data, atomic replacement, recovery and failed writes.
-- [ ] Run those tests before implementation.
-- [ ] Implement sandboxed local shell, restricted IPC and native project dialogs with close/save coordination.
-- [ ] Run `npm test` and build renderer; failures must be resolved before proceeding.
-- [ ] Commit shell/persistence and record progress.
+- [x] Write failing tests for project round trips, invalid/oversized/unsupported data, atomic replacement, recovery and failed writes.
+- [x] Run those tests before implementation.
+- [x] Implement sandboxed local shell, restricted IPC and native project dialogs with close/save coordination.
+- [x] Run `npm test` and build renderer; failures must be resolved before proceeding.
+- [x] Commit shell/persistence and record progress.
 
 ### Task 3: Desktop editing workspace and guide
 
@@ -57,11 +57,11 @@
 
 **Interfaces:** editor emits source and line selections; timeline emits validated timing actions; preview renderer returns the same geometry used for hit testing and drawing. The controller consumes `DocumentStore` and the preload API; no component writes files directly.
 
-- [ ] Add desktop smoke expectations for loaded shell/bridge, real CodeMirror caret/gutter, guide, linked selection, preview position updates, timeline resize/context operations, Undo/Redo and native file cancellation/recovery.
-- [ ] Run to observe missing UI failures where the environment supports Electron; otherwise preserve tests for Windows CI and report the limit.
-- [ ] Implement the workspace and built-in lessons, with keyboard-accessible menus and numeric alternatives to dragging.
-- [ ] Run core tests, build and desktop smoke; verify original and new interaction paths.
-- [ ] Commit UI and record progress.
+- [x] Add desktop smoke expectations for loaded shell/bridge, real CodeMirror caret/gutter, guide, linked selection, preview position updates, timeline resize/context operations, Undo/Redo and native file cancellation/recovery.
+- [x] Run to observe missing UI failures where the environment supports Electron; otherwise preserve tests for Windows CI and report the limit.
+- [x] Implement the workspace and built-in lessons, with keyboard-accessible menus and numeric alternatives to dragging.
+- [x] Run core tests, build and desktop smoke; verify original and new interaction paths.
+- [x] Commit UI and record progress.
 
 ### Task 4: Windows builds, documentation and review
 
@@ -69,8 +69,8 @@
 
 **Interfaces:** `npm run build`, `npm run test:desktop`, `npm run dist:win` produce a tested Windows x64 installer and portable build; CI uploads artifacts and SHA256 hashes.
 
-- [ ] Add pinned dependency lockfile, build configuration and Windows workflow with tests before packaging.
-- [ ] Record exact verification results and future AI/plugin scope; no claims of Windows runtime testing without evidence.
-- [ ] Run all checks and inspect package contents, then obtain one independent whole-change review.
-- [ ] Resolve important review findings with regression tests, run suite again and push a reviewable feature branch/PR.
+- [x] Add pinned dependency lockfile, build configuration and Windows workflow with tests before packaging.
+- [x] Record exact verification results and future AI/plugin scope; no claims of Windows runtime testing without evidence.
+- [x] Run all checks and inspect package contents, then obtain one independent whole-change review.
+- [x] Resolve important review findings with regression tests, run suite again and push a reviewable feature branch/PR.
 - [ ] Inspect Windows CI/build results and provide the artifact/run link with the final feature and follow-up report.

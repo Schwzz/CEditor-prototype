@@ -314,6 +314,60 @@ app
     );
     assert.equal(await source(), saved.source);
     passed("Open loads real project content, file identity, and fresh history");
+    await wait(
+      () => !document.getElementById("openProject").disabled,
+      "open idle before cleanup failure",
+    );
+    await fs.mkdir(path.join(dataDirectory, "recovery.json"));
+    opening = otherPath;
+    await click("openProject");
+    await wait(
+      () => !document.getElementById("openProject").disabled,
+      "open after recovery cleanup failure",
+    );
+    assert.equal(
+      await source(),
+      otherSource,
+      "a failed recovery cleanup cannot leave the old document bound to the newly opened file",
+    );
+    assert.equal(
+      await page(() => document.getElementById("fileName").textContent),
+      "Other.framecode.json",
+    );
+    await click("saveProject");
+    await wait(
+      () => !document.getElementById("saveProject").disabled,
+      "save after cleanup failure",
+    );
+    assert.equal(
+      JSON.parse(await fs.readFile(otherPath, "utf8")).source,
+      otherSource,
+    );
+    await click("newProject");
+    await wait(
+      () => !document.getElementById("newProject").disabled,
+      "new after cleanup failure",
+    );
+    assert.equal(await source(), original);
+    assert.equal(
+      await page(() => document.getElementById("fileName").textContent),
+      "Untitled.framecode.json",
+    );
+    await fs.rm(path.join(dataDirectory, "recovery.json"), {
+      recursive: true,
+      force: true,
+    });
+    opening = originalPath;
+    await click("openProject");
+    await wait(
+      () =>
+        document.getElementById("fileName").textContent ===
+        "Saved.framecode.json",
+      "original reopened after cleanup repaired",
+    );
+    passed(
+      "recovery cleanup failures cannot redirect Save to another document",
+    );
     await replaceCode(saved.source + "\nunknownFunction(");
     await wait(
       () => !document.getElementById("error").hidden,
@@ -578,6 +632,27 @@ app
     );
     assert.equal(await recoverFile.read(), null);
     passed("Close Save writes the project before closing its native window");
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "last close-cleanup test window",
+    );
+    await field("param-title", "DISCARD WITH LOCKED RECOVERY", "input");
+    await fs.mkdir(path.join(dataDirectory, "recovery.json"));
+    unsaved = 1;
+    window.close();
+    for (let attempt = 0; attempt < 100 && !window.isDestroyed(); attempt++)
+      await sleep(30);
+    assert.equal(
+      window.isDestroyed(),
+      true,
+      "explicit Discard must close even if old recovery cannot be removed",
+    );
+    passed("Close Discard is not blocked by recovery cleanup failure");
     await fs.rm(dataDirectory, { recursive: true, force: true });
     clearTimeout(deadline);
     console.log(`DESKTOP COMPLETE: ${checks} checks passed.`);
