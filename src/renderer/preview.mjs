@@ -253,5 +253,14 @@ export function createPreview(
     }
   });
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  let resizeFrame = null;
+  new ResizeObserver(() => {
+    if (resizeFrame === null)
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        if (gesture) end(true);
+        else draw();
+      });
+  }).observe(canvas);
   return { draw, cancel: () => end(true) };
 }

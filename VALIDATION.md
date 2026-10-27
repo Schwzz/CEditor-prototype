@@ -3,7 +3,7 @@
 ## Local verification
 
 - `npm run check`: JavaScript module syntax checks.
-- `npm test`: 46 tests covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, and preview geometry.
+- `npm test`: 47 tests covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, and preview geometry.
 - `npm run build`: bundles CodeMirror and the renderer with esbuild, without external runtime resources.
 - `npm run test:desktop`: 35 integration checks in a real Electron process, including actual pointer input and filesystem writes.
 

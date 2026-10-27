@@ -137,6 +137,12 @@ module.exports = async function ({
   const shape =
     'composition("Handles").duration(5)\nshape("s").at(0).for(5).motion("none").position(960,540)';
   await replaceCode(shape);
+  await page(async () => {
+    document.querySelector(".canvas-shell").style.width = "160px";
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
+  });
   await page(() => document.querySelector('.clip-body[data-clip="s"]').click());
   const geometry = await page(() => {
     const r = document.getElementById("canvas").getBoundingClientRect();
@@ -157,12 +163,16 @@ module.exports = async function ({
     }),
   );
   const scale = await page(() => +document.getElementById("objectScale").value);
-  assert.ok(scale > 1.1 && scale < 1.5, "corner drag changes scale");
+  assert.ok(
+    scale > 1.1 && scale < 1.5,
+    "corner drag changes scale: " + JSON.stringify({ scale, geometry }),
+  );
   await click("undo");
   assert.equal(await source(), shape);
   const top = -375 - 3 * Math.max(12, (6 * 1920) / geometry.w),
-    rx = -top * sn,
-    ry = top * c;
+    margin = Math.max(12, (6 * 1920) / geometry.w),
+    rx = Math.max(margin, Math.min(1920 - margin, 960 - top * sn)) - 960,
+    ry = Math.max(margin, Math.min(1080 - margin, 540 + top * c)) - 540;
   const angle = Math.PI / 4;
   await drag(
     project({ x: 960 + rx, y: 540 + ry }),
@@ -216,5 +226,8 @@ module.exports = async function ({
   passed(
     "hidden selected layers are protected from preview pointer and keyboard movement",
   );
+  await page(() => {
+    document.querySelector(".canvas-shell").style.width = "";
+  });
   await replaceCode(original);
 };

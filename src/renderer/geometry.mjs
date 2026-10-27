@@ -43,8 +43,20 @@ export function itemCorners(item) {
     [l, b],
   ].map(([x, y]) => toWorld(item, x, y));
 }
-export function transformHandles(item, gap = 60) {
+export function transformHandles(
+  item,
+  gap = 60,
+  frame = { width: 1920, height: 1080 },
+) {
   const corners = itemCorners(item);
+  const rotate = toWorld(
+    item,
+    item.localLeft + item.width / 2,
+    item.localTop - gap / item.scale,
+  );
+  const margin = Math.min(gap / 3, Math.min(frame.width, frame.height) / 4);
+  rotate.x = Math.max(margin, Math.min(frame.width - margin, rotate.x));
+  rotate.y = Math.max(margin, Math.min(frame.height - margin, rotate.y));
   return [
     ...corners.map((p, i) => ({
       ...p,
@@ -52,11 +64,7 @@ export function transformHandles(item, gap = 60) {
       key: ["nw", "ne", "se", "sw"][i],
     })),
     {
-      ...toWorld(
-        item,
-        item.localLeft + item.width / 2,
-        item.localTop - gap / item.scale,
-      ),
+      ...rotate,
       kind: "rotate",
       key: "rotate",
     },

@@ -27,3 +27,17 @@ test("hidden and locked objects are excluded from preview picking", () => {
   assert.equal(items.length, 1);
   assert.equal(hitTest(items, 210, 390), null);
 });
+
+test("rotation handle stays within a small preview frame", async () => {
+  const { transformHandles } = await import("../src/renderer/geometry.mjs");
+  const [item] = frameGeometry(
+    ctx,
+    compile(
+      'composition("Small").duration(5)\nshape("s").at(0).for(5).motion("none").position(960,540)',
+    ),
+    2,
+  );
+  const handle = transformHandles(item, 216).at(-1);
+  assert.ok(handle.x >= 72 && handle.x <= 1848);
+  assert.ok(handle.y >= 72 && handle.y <= 1008);
+});
