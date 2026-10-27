@@ -9,7 +9,7 @@ import {
   encodeTemplate,
   decodeTemplate,
   visibleClips,
-} from "../dist/engine.mjs";
+} from "../src/core/engine.mjs";
 test("example and every reusable template compile into timed clips", () => {
   for (const t of TEMPLATES) {
     const m = compile(t.source);

@@ -1,39 +1,35 @@
-# Prototype validation
+# Windows prototype validation
 
-Validated on 27 October 2026 using Node.js checks and a desktop Chromium browser against the served prototype.
+## Local verification
 
-## Automated checks
+- `npm run check`: JavaScript module syntax checks.
+- `npm test`: 32 tests covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, and preview geometry.
+- `npm run build`: bundles CodeMirror and the renderer with esbuild, without external runtime resources.
+- `npm run test:desktop`: 26 integration checks in a real Electron process, including actual pointer input and filesystem writes.
 
-`npm run check`: syntax checks for the UI module, composition engine, and local server.
+Desktop integration covers source/parameter synchronization, linked selection, timing handles, one-step drag Undo, preview hit testing/movement, context-menu splitting, clipboard snapshots, cancelled saves, native project serialization, invalid-source recovery, saving invalid drafts, unsaved Open/Close cancellation, cancelled and successful Open, failed Save As, closing with Save and cancelled pickers, New/reset history, guide loading, scrolling/caret alignment at 100% and 125% zoom, recovery across window recreation, saving a restored draft, and preserving recovery when closed before a choice.
 
-`npm test`: 9 engine tests covering all example templates, parameter resolution, source/timing round trips, invalid code rejection, Unicode snapshot encoding, clip visibility boundaries, method-like strings in labels, parameter identifier validation, and names shared with `Object.prototype`.
+The editor regression checks verify that a long document scrolls inside the editor, line-number and text rows stay aligned, and the caret remains centered on its line. The checks caught and corrected a flex layout that initially allowed long source to stretch the workspace.
 
-Three regression tests were observed failing before their fixes and passing afterward.
+## Test environment and limits
 
-## Browser interactions
+Local desktop integration runs on Linux using Electron's headless Ozone backend. The restricted execution container needs a test-launch-only `--no-sandbox` flag; the application window configuration retains sandboxing and shipped Windows launches do not use that flag. Desktop host-service diagnostics about unavailable D-Bus/udev/netlink services are environment messages, not renderer errors.
 
-| Interaction | Observed result |
-| --- | --- |
-| Edit source timing and text | Headline moved to 0.8 seconds with an 8-second duration; template controls and timeline reflected the edited source. |
-| Change a template parameter | Title changed to `SWARTZ IN MOTION` in the source and corresponding timeline clip. |
-| Inspect a timeline clip | The corresponding source line highlighted and the timing inspector appeared. |
-| Select a source line | Moving the source caret to the Signal line selected the corresponding timeline element. |
-| Adjust numeric timing | Changing the start with the inspector's number control updated the source. |
-| Nudge with keyboard | ArrowRight changed start time by 0.1 seconds and retained clip focus. |
-| Drag a timeline clip | Dragging Headline moved its start from 1 to 2 seconds and wrote `.at(2)` to the source. |
-| Play and pause | Playhead advanced; Pause stopped playback. |
-| Scrub preview | Moving the seek slider to its end set the playhead to 12 seconds. |
-| Copy template source | Clipboard text matched the exact snapshot shown in the share dialog. |
-| Copy and open remix link | A second tab loaded the correct source and displayed `YOUR EDITABLE COPY`. |
-| Edit a remix | Changing the copied title left the original tab's shared snapshot unchanged. |
-| Try snapshot as editable copy | The dialog closed and the workspace displayed the editable-copy state. |
-| Load a gallery template | After hours loaded its title and composition. |
-| Undo template replacement | The previous custom title and source were restored. |
-| Save and reload a draft | A custom title survived reload. |
-| Invalid code | An unknown function produced a line-specific error and disabled sharing. |
-| Reload an invalid draft | The invalid source and error remained, while all four clips from the last valid composition were restored. |
-| Reset | The original Orbit study source, controls, timing, and paused preview returned. |
+Native file-dialog choices are test fixtures so tests do not require a person to select files. Serialization, atomic writes, clipboard APIs, source editor, pointer gestures, and app state transitions execute for real. Human testing of actual Windows dialog presentation, multiple monitors, mixed display scaling, IME input, and accessibility tools is still useful.
 
-## Limits of verification
+## Windows CI gates
 
-Browser interaction checks were manual agent-driven QA, not a committed browser automation suite. Actual mobile devices and other browsers were not tested. Engine tests and syntax checks run in GitHub Actions; this workflow does not deploy a public site or perform browser tests. No media processing or video export is implemented or claimed.
+The Windows workflow must pass all of the following before producing a successful downloadable artifact:
+
+1. Linux syntax/core tests and renderer build.
+2. Windows dependency installation and renderer build.
+3. The Electron desktop integration suite on Windows, without the Linux headless flags.
+4. Portable executable and installer packaging.
+5. Launch of `release/win-unpacked/Framecode.exe` and detection of its initialized native window title.
+6. SHA256 checksum generation and upload of both Windows executables.
+
+Build results are authoritative in GitHub Actions. This document describes the gates; it does not claim a particular remote run passed before its result exists.
+
+## Intentional prototype limits
+
+No media import, audio, rendered-video export, keyframes, multi-selection, cloud projects, collaboration, third-party plugin loading, or AI-agent connection is implemented. Positions and motions are procedural. The Windows executables are unsigned and no automatic update service is installed.

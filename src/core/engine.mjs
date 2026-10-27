@@ -198,22 +198,45 @@ export function compile(source) {
       motion: "fade",
       look: "orbit",
       color: "#d6fa69",
+      position: null,
+      sourceAt: 0,
+      sourceDuration: null,
+      hasSourceWindow: false,
     };
     const allowed = {
-      scene: ["at", "for", "look"],
-      text: ["at", "for", "value", "place", "motion"],
-      shape: ["at", "for", "color", "motion"],
+      scene: ["at", "for", "look", "sourceAt", "sourceDuration"],
+      text: [
+        "at",
+        "for",
+        "value",
+        "place",
+        "motion",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+      ],
+      shape: [
+        "at",
+        "for",
+        "color",
+        "motion",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+      ],
     };
     const seen = new Set();
     for (const call of parsed) {
       if (
         !allowed[root.name].includes(call.name) ||
-        call.args.length !== 1 ||
+        call.args.length !== (call.name === "position" ? 2 : 1) ||
         seen.has(call.name)
       )
         fail(line, `Unsupported or repeated method: .${call.name}().`);
       seen.add(call.name);
-      clip[call.name] = call.args[0];
+      clip[call.name] = call.name === "position" ? call.args : call.args[0];
+      if (["sourceAt", "sourceDuration"].includes(call.name))
+        clip.hasSourceWindow = true;
     }
     result.clips.push(clip);
   });
@@ -243,8 +266,31 @@ export function compile(source) {
       "motion",
       "look",
       "color",
+      "sourceAt",
+      "sourceDuration",
     ])
       clip[key] = resolve(clip[key], clip.line + 1);
+    if (clip.position) {
+      clip.position = clip.position.map((value) =>
+        resolve(value, clip.line + 1),
+      );
+      if (
+        !clip.position.every(
+          (value) => Number.isFinite(value) && Math.abs(value) <= 100000,
+        )
+      )
+        fail(clip.line + 1, "Position needs two finite pixel coordinates.");
+    }
+    clip.sourceDuration ??= clip.sourceAt + clip.for;
+    if (
+      !Number.isFinite(clip.sourceAt) ||
+      clip.sourceAt < 0 ||
+      !Number.isFinite(clip.sourceDuration) ||
+      clip.sourceDuration <= 0 ||
+      clip.sourceDuration > 60 ||
+      clip.sourceAt + clip.for > clip.sourceDuration + 0.000001
+    )
+      fail(clip.line + 1, "Clip exceeds its animation source window.");
     if (
       !Number.isFinite(clip.at) ||
       clip.at < 0 ||
@@ -316,3 +362,5 @@ export function decodeTemplate(hash) {
 export function visibleClips(model, time) {
   return model.clips.filter((c) => time >= c.at && time < c.at + c.for);
 }
+
+export { calls as parseStatement };
