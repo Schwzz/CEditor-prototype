@@ -18,7 +18,7 @@ export const LESSONS = [
     code: basic,
     notes: [
       'composition("Name") names the project. .duration(6) makes it six seconds long.',
-      "Each scene(), text(), or shape() statement makes one timeline clip. Its quoted name must be unique.",
+      'Each scene(), text(), or shape() statement makes one timeline clip. Its quoted stable key must be unique; .label("Display name") renames it without changing that key.',
       "Dots attach settings to the same clip. Keep each complete statement on one line. This is a small language, not arbitrary JavaScript.",
     ],
     exercise:
@@ -67,6 +67,7 @@ text("Title").at(0.5).for(7).value("MOVE ME.").position(200, 400).motion("rise")
     notes: [
       "X increases from left to right. Y increases from top to bottom. .position(200, 400) sets a logical-pixel anchor.",
       "For text, the anchor is the first line’s baseline; centered text uses its center baseline. For a shape it is its center. Motion adds an offset to that base position.",
+      "Corners resize uniformly; the round handle rotates (Shift: 15° steps). .scale(1.5), .rotation(45), and .opacity(0.5) are written to source. Scale is 0.1–4, rotation -360–360 degrees, opacity 0–1. Cyan guides align an object’s visual center with the frame center.",
       "Click or drag an object in the preview. Code and timeline selection follow. Use the X/Y fields, or focus the canvas and use arrow keys (Shift for 10 pixels). Background scenes fill the frame and cannot be moved.",
     ],
     exercise:
@@ -96,6 +97,8 @@ text("Caption").at(1).for(6).value("A quieter thought.").place("bottom").motion(
     notes: [
       "Keep a full-frame scene before the objects you want to see over it. A later full-frame scene can cover earlier objects.",
       "Preview clicks select the top visible object under the pointer. Select covered objects through their timeline clip or source line.",
+      "Ctrl/Shift-click toggles multiple selection. Drag or nudge selected timeline clips together; one completed gesture is one Undo. Zoom enlarges the timeline; Snap uses frames, clip edges and the playhead. Comma/period or the frame buttons step by 1/30 second.",
+      "Layer name edits .label(), preserving the root key. ↑/↓ change source stacking; ◉ hides via .hidden(1), and □ locks via .locked(1). Use 0 to restore. Hidden clips are not drawn; locked clips remain selectable in the timeline but visual edits/deletion are blocked. Code and shared parameters are still deliberately editable.",
       "Selection is shared. A selected object gets a preview outline, its source line is highlighted, and its timeline clip is outlined. If it is outside the current time, selection seeks into its visible range.",
     ],
     exercise:
@@ -138,6 +141,7 @@ shape("Part two").at(4).for(6).color("#d6fa69").motion("orbit").sourceAt(4).sour
     notes: [
       'composition("Name").duration(seconds); param("name", "value") or param("name", 1). One composition per file; parameter names are unique.',
       'scene("Name"): .at(), .for(), .look(), .sourceAt(), .sourceDuration(). text("Name") also supports .value(), .place(), .motion(), .position(x,y). shape("Name") supports .color(), .motion(), .position(x,y).',
+      "All clips accept .label(), .hidden(0 or 1), .locked(0 or 1), and .opacity(0–1). Text and shape also accept .scale(0.1–4) and .rotation(-360–360 degrees). Inspector fields and Copy/Cut/Duplicate/Split affect the primary selection; group move/nudge/Delete affect all selected clips.",
       "Limits: 1–60 seconds, at most 24 clips, at most 50,000 source characters. Every clip must have positive length and fit inside the composition. Single quotes, functions, loops, imports, and arbitrary JavaScript are not supported.",
     ],
     exercise:

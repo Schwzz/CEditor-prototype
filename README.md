@@ -8,7 +8,7 @@ This is a prototype for testing the interaction model. It does not import or exp
 
 1. Open this repository's **Actions** tab, then **Windows desktop prototype**.
 2. Open a successful run and download **Framecode-Windows-x64** under Artifacts. GitHub may require you to sign in to download it.
-3. Extract the ZIP and run `Framecode-0.2.0-win-x64-portable.exe`, or use the `setup.exe` build to install the app and create shortcuts.
+3. Extract the ZIP and run `Framecode-0.3.0-win-x64-portable.exe`, or use the `setup.exe` build to install the app and create shortcuts.
 
 The packaged app includes its runtime. You do not need Node.js, a separate terminal, a browser tab, a server, or an account to use it. These prototype builds are unsigned. Artifacts are retained for 30 days; a new workflow run rebuilds them.
 
@@ -17,7 +17,10 @@ The packaged app includes its runtime. You do not need Node.js, a separate termi
 - Press **F1** or open **Code guide**. It contains nine lessons, a language reference, complete editable examples, and exercises.
 - Change a title in the code or the template controls. Both update the preview and timeline.
 - Select a code line, timeline clip, or visible preview object. Selection follows across panels.
+- Drag a text/shape corner handle to resize uniformly or its round handle to rotate (Shift snaps rotation to 15°). Scale, rotation, opacity, and X/Y fields allow exact values. Cyan guides snap the selected object’s visual center to the frame center while moving.
 - Drag text or shapes in the preview to reposition them. The app pauses playback and writes `.position(x, y)` into the code. Precise X/Y fields and arrow-key movement are available too.
+- Ctrl-click or Shift-click clips to select several, then drag or nudge them together. Use Zoom (1×–4×), Snap, and the frame-step buttons; comma/period also step by 1/30 second.
+- Rename the primary selection in **Layer name**. Beside each timeline layer, ↑ moves it backward, ↓ moves it forward, ◉ toggles visibility, and □ toggles its lock. Later source statements draw in front.
 - Drag timeline clips to move them. Pull either edge to resize, or enter exact start/end/length values in the inspector.
 - Right-click a clip, or press **Shift+F10** on it, for split, cut/copy/paste, duplicate, delete, and timing controls.
 - Save the composition as a local `.framecode.json` project.
@@ -26,7 +29,7 @@ The packaged app includes its runtime. You do not need Node.js, a separate termi
 
 ## Editing and timing rules
 
-Each clip has a unique quoted name. Each complete statement occupies one line. Use double-quoted strings, numbers such as `0.5`, `$parameter` references, and whole-line `//` comments.
+Each clip has a unique quoted stable key, such as `text("title-1")`. Use `.label("Title")` to rename its display name while keeping selection and references intact. Editing the root key intentionally creates a different identity. Each complete statement occupies one line. Use double-quoted strings, numbers such as `0.5`, `$parameter` references, and whole-line `//` comments.
 
 ```js
 composition("Orbit study").duration(12)
@@ -41,6 +44,9 @@ shape("Signal").at(0).for(12).color($accent).position(1380, 548).motion("orbit")
 
 | Setting | Meaning |
 | --- | --- |
+| `.label("Title")` | Display name; the root statement key remains its identity. |
+| `.hidden(1)` / `.locked(1)` | Hide / lock a layer; `0` restores it. Locks guard visual editing and destructive commands; you can still deliberately edit its code or shared template parameters. |
+| `.scale(1.5).rotation(45).opacity(0.5)` | Text/shape transforms: scale 0.1–4, rotation -360–360 degrees, opacity 0–1. Rotation adds to procedural motion and opacity multiplies it. |
 | `.at(2).for(3)` | Start at 2 seconds, last 3 seconds, end at 5 seconds. |
 | `.position(x, y)` | Logical-pixel anchor in a 1920×1080 frame; text uses its baseline, shapes use their center. |
 | Text `.place()` | `left`, `center`, `bottom`; an explicit position overrides preset coordinates. Bottom placement also uses a smaller caption font. |
@@ -54,7 +60,7 @@ The frame is drawn in source order; later clips appear above earlier clips. The 
 
 The language is restricted and **never evaluates arbitrary JavaScript**. It supports compositions from 1 to 60 seconds, at most 24 clips, and up to 50,000 source characters. Split pieces must be at least 0.1 seconds long. There are no loops, imports, arbitrary functions, or multiline statements.
 
-Copy/Paste uses a versioned clip snapshot. Referenced parameters are imported; conflicting parameter values receive new names rather than modifying the target composition. Duplicate preserves bindings. Paste starts at the playhead when possible and clamps its start to fit. Split and clipboard Cut are different commands.
+Copy/Paste uses a versioned clip snapshot. Referenced parameters are imported; conflicting parameter values receive new names rather than modifying the target composition. Duplicate preserves bindings. Paste starts at the playhead when possible and clamps its start to fit. Split and clipboard Cut are different commands. Copy/Cut/Duplicate/Split and exact inspector fields operate on the primary selected clip. Timeline group drag/nudge and Delete operate on all selected clips; preview movement excludes hidden layers; one locked member rejects the entire edit. Locks and visibility are preserved in project source. Older builds cannot interpret the new methods.
 
 ## Local files and recovery
 
@@ -76,6 +82,8 @@ For templates, use **Template source** to copy the full composition code or save
 | Ctrl+F / Ctrl+Enter | Search code / Run |
 | Space outside editable fields and buttons | Play / Pause |
 | F1 | Code guide |
+| Comma / Period outside editable fields | Previous / Next frame at 30 fps |
+| Ctrl-click / Shift-click timeline or preview objects | Toggle selection |
 | Shift+F10 on a timeline clip | Clip context menu |
 | Left / Right on a clip or edge | Nudge timing by 0.1 seconds |
 | Shift+Left / Shift+Right on clip body | Nudge clip by 1 second |

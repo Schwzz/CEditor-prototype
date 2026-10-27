@@ -86,3 +86,10 @@ test("recovery writes are ordered and clearing cannot resurrect a stale save", a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("new layer and transform methods persist in version1 projects", () => {
+  const source =
+    'composition("New").duration(5)\ntext("stable").at(0).for(5).value("HI").label("Renamed").hidden(1).locked(1).scale(1.5).rotation(90).opacity(0.5)';
+  const value = { ...project(), source, lastValid: source };
+  assert.deepEqual(decodeProject(encodeProject(value)), value);
+});

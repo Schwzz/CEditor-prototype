@@ -25,6 +25,9 @@ export class DocumentStore {
   get selected() {
     return this.#history[this.#index].selected;
   }
+  get selectedIds() {
+    return [...this.#history[this.#index].selectedIds];
+  }
   get canUndo() {
     return this.#index > 0;
   }
@@ -50,8 +53,12 @@ export class DocumentStore {
       this.error = error;
       this.model = compile(this.lastValid);
     }
-    if (!this.model.clips.some((c) => c.id === this.selected))
-      this.#history[this.#index].selected = null;
+    const snapshot = this.#history[this.#index];
+    snapshot.selectedIds = snapshot.selectedIds.filter((id) =>
+      this.model.clips.some((c) => c.id === id),
+    );
+    if (!snapshot.selectedIds.includes(snapshot.selected))
+      snapshot.selected = snapshot.selectedIds.at(-1) || null;
   }
   serialize() {
     return {
@@ -69,7 +76,12 @@ export class DocumentStore {
       throw new Error("Invalid project document.");
     compile(project.lastValid);
     this.#history = [
-      { source: project.source, lastValid: project.lastValid, selected: null },
+      {
+        source: project.source,
+        lastValid: project.lastValid,
+        selected: null,
+        selectedIds: [],
+      },
     ];
     this.#index = 0;
     this.#coalesce = null;
@@ -77,10 +89,20 @@ export class DocumentStore {
     this.#saved = dirty ? "" : fingerprint(this.serialize());
     this.#emit("load");
   }
-  select(id) {
-    const selected = this.model.clips.some((c) => c.id === id) ? id : null;
-    if (selected === this.selected) return;
-    this.#history[this.#index].selected = selected;
+  select(id, { toggle = false, add = false } = {}) {
+    if (!this.model.clips.some((c) => c.id === id)) id = null;
+    let ids = (toggle || add) && id ? this.selectedIds : [];
+    if (id) {
+      if (toggle && ids.includes(id)) ids = ids.filter((key) => key !== id);
+      else if (!ids.includes(id)) ids.push(id);
+    }
+    const selected = ids.includes(id) ? id : ids.at(-1) || null;
+    if (
+      JSON.stringify(ids) === JSON.stringify(this.selectedIds) &&
+      selected === this.selected
+    )
+      return;
+    Object.assign(this.#history[this.#index], { selected, selectedIds: ids });
     this.#emit("selection");
   }
   commit(
@@ -94,10 +116,20 @@ export class DocumentStore {
     if (typeof source !== "string" || source.length > 50000)
       throw new Error("Keep source under 50,000 characters.");
     if (source === this.source) {
-      this.select(selected);
+      if (selected !== this.selected) this.select(selected);
       return false;
     }
-    const next = { source, lastValid: this.lastValid, selected },
+    const next = {
+        source,
+        lastValid: this.lastValid,
+        selected,
+        selectedIds:
+          selected === this.selected
+            ? this.selectedIds
+            : selected
+              ? [selected]
+              : [],
+      },
       now = Date.now();
     const merge =
       coalesce &&

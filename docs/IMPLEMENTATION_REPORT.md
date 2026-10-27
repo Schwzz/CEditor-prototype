@@ -1,6 +1,21 @@
 # Windows prototype implementation report
 
-## Delivered scope
+## 0.3.0 editing pass — 28 October 2026
+
+The authorized first three feature groups are Timeline, Layers and Preview.
+
+- Foundation fixes: separate stable keys from display labels; compile batch edits before committing; shared multiple selection; locks reject whole group edits without partial changes. Legacy version1 project files and long stable keys remain readable.
+- Timeline: 1×–4× zoom with horizontal scrolling, optional snapping to frames/playhead/clip edges, 30fps stepping, Ctrl/Shift multi-selection and group drag/nudge/Delete.
+- Layers: rename, backward/forward source stacking, hide/show and lock/unlock, persisted as readable source methods.
+- Preview: uniform corner resizing, rotation handle, Shift 15° rotation snapping, exact scale/rotation/opacity/X/Y fields, center guides, and shared transformed geometry for picking and outlines.
+- One completed gesture/batch is one shared Undo step. Inspector fields and Copy/Cut/Duplicate/Split operate on the primary selection. Locks protect visual/destructive commands; intentional code/shared-parameter edits remain possible.
+- Fixed two issues caught by the desktop checks: the seek slider was rounding frame times to centiseconds; a synchronous ResizeObserver width update caused a layout feedback warning at zoom changes.
+
+Local verification: 46 Node tests and 35 real Electron checks pass, alongside syntax/build checks. Pointer tests cover zoom plus horizontal scrolling, actual corner/rotation handles, and source changes during a gesture. The test harness now carries the held-left-button flag on drag moves; without it Chromium released pointer capture and produced a false scrolled-resize failure. Independent review found no Critical issues and two Important issues: a boundary no-op collapsed a group selection, and preview movement changed hidden selected layers. Both were reproduced by failing regressions and fixed. No actionable Minor issues were reported. The Windows CI result is linked at handoff.
+
+
+
+## Original desktop scope
 
 1. Electron desktop window and Windows x64 portable/installer packaging; no server, browser tab, separate terminal or account required by the packaged app.
 2. CodeMirror source editor with one caret/text/gutter layout, dark syntax colors, code search, and verified long-document scrolling at 100%/125% zoom.
@@ -40,7 +55,7 @@ Native file-dialog choices are fixtures in automated tests; filesystem operation
 - Do hands-on Windows testing of native dialogs, mixed monitor scaling, IME input and assistive technology. Automated alignment checks currently exercise 100% and 125% zoom, not every display configuration.
 - Continue testing source/timeline round trips with real editing sessions; the language remains intentionally small and line-based.
 - The renderer/controller can be split further as the editor grows; keep new features behind the shared document operations.
-- Real media import, audio, video export, keyframes and multi-selection remain later milestones, not missing pieces of the approved prototype scope.
+- Real media import, audio, video export, keyframes remain later milestones, not missing pieces of the approved prototype scope.
 
 ## Future features recorded
 
@@ -51,3 +66,18 @@ Community plugin loading and connecting an external AI agent are recorded in ROA
 - Used a fresh checkout and a feature branch to isolate desktop changes from the previous Site-backed checkout. The hosted prototype is preserved; the repository's desktop branch removes obsolete hosting/server source.
 - Executed the user's approved scope without another design-approval gate. Electron and CodeMirror were implementation choices to reuse the working visual direction and replace the fragile editor overlay; a different desktop stack would require another packaging/integration pass.
 - Moved the renderer build check from the native-shell task to the workspace task because that task creates the renderer entry/HTML. The integrated build and runtime checks passed before the complete work was submitted.
+
+## Editing-pass scope decisions
+
+- Interpreted “first three” as the first three feature-table rows: Timeline, Layers, Preview. The user authorized implementation, so this pass did not add another approval round. If that interpretation differs, the scope will need correction.
+- Continued on the existing dedicated desktop feature branch/PR, preserving main and the old hosted prototype. The PR contains the desktop conversion plus this pass.
+- Retained the measured 60s/24-clip limits. No export pipeline or audio type exists yet, so renderer/export unification and audio mute await those milestones.
+- No media import, export, plugin loader, SDK, agent connection or model provider was added. They remain explicit later milestones.
+
+## Editing-pass review rulings
+
+- Hidden layers remain intentionally editable through the timeline. Preview movement excludes hidden members to prevent invisible changes; the two paths have separate regression coverage.
+- Direct code and shared template parameters can deliberately change locked layers; locks protect visual/destructive tools, as documented.
+- Picking uses transformed selection bounds, not pixel-perfect decorative strokes. This retains the prototype’s existing bounding-box interaction.
+- Media, audio, export, plugins, AI and increasing prototype limits remain deferred. Their absence limits the editor to procedural compositions.
+- Native Windows scaling/IME/accessibility and signing still need platform/manual validation beyond CI.

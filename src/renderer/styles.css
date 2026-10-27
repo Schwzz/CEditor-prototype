@@ -2033,3 +2033,121 @@ main {
     font-size: 8px;
   }
 }
+
+/* Basic desktop editing tools. */
+.timeline-grid {
+  --label: 196px;
+  min-width: 100%;
+}
+.track-label {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #1b211c;
+  padding: 0 8px;
+  overflow: hidden;
+}
+.timeline-tools,
+.frame-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+.timeline-tools label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.timeline-tools input {
+  width: 70px;
+  accent-color: var(--accent);
+}
+.timeline-tools button,
+.frame-tools button {
+  background: #283024;
+  color: #cbd5c5;
+  border: 1px solid #46503e;
+  border-radius: 4px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+.timeline-tools button[aria-pressed="true"] {
+  color: #d6fa69;
+  border-color: #708446;
+}
+.track-row.is-hidden .clip {
+  opacity: 0.4;
+}
+.track-row.is-locked .clip {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 5px,
+    #ffffff06 5px,
+    #ffffff06 10px
+  );
+}
+.track-row.is-locked .clip-body {
+  cursor: default;
+}
+
+.layer-controls {
+  display: flex;
+  gap: 2px;
+}
+.layer-controls button {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  padding: 1px;
+  cursor: pointer;
+}
+.layer-controls .layer-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  font-size: 10px;
+}
+.layer-tool {
+  flex: 0 0 17px;
+  font-size: 12px;
+}
+.layer-tool[aria-pressed="true"] {
+  color: #d6fa69;
+  background: #3a472f;
+  border-radius: 3px;
+}
+.layer-tool:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.layer-controls button:focus-visible {
+  outline: 1px solid var(--accent);
+}
+.layer-rename {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10px;
+  color: #a3ad9c;
+  margin: 12px 0;
+}
+.layer-rename input {
+  background: #161a17;
+  border: 1px solid #404b39;
+  color: #dde5d6;
+  border-radius: 4px;
+  padding: 6px;
+  width: 100%;
+}
+
+.transform-fields {
+  margin-top: 10px;
+}
+input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

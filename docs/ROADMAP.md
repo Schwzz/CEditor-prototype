@@ -5,7 +5,7 @@ The current milestone tests code, preview, timeline, reusable parameters, and lo
 ## Basic editor growth
 
 - Real image/video/audio import, source-media timing and missing-file handling.
-- Reliable rendering/export, followed by transitions, keyframes, track organization and multi-selection.
+- Reliable rendering/export, followed by transitions, keyframes and fuller track organization. Multi-selection/group movement, basic layer controls and preview transforms are implemented in 0.3.0.
 - Further usability work guided by hands-on Windows testing, including mixed display scaling, IME input and accessibility.
 
 ## Community extensions

@@ -32,29 +32,87 @@ function changedLine(raw, properties) {
   const indent = raw.slice(0, raw.length - raw.trimStart().length),
     calls = parseStatement(raw.trim(), 1);
   for (const [name, value] of Object.entries(properties)) {
-    if (!["at", "for", "position", "sourceAt", "sourceDuration"].includes(name))
+    if (
+      ![
+        "at",
+        "for",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+        "label",
+        "hidden",
+        "locked",
+        "scale",
+        "rotation",
+        "opacity",
+      ].includes(name)
+    )
       throw new Error("Unsupported clip property.");
     const args = name === "position" ? value : [value];
     if (
       !Array.isArray(args) ||
       args.length !== (name === "position" ? 2 : 1) ||
-      !args.every(Number.isFinite)
+      !(name === "label"
+        ? typeof value === "string"
+        : args.every(Number.isFinite))
     )
       throw new Error("Use finite numeric values.");
-    const next = { name, args: args.map(rounded) },
+    const next = { name, args: name === "label" ? args : args.map(rounded) },
       index = calls.findIndex((call) => call.name === name);
     if (index < 0) calls.push(next);
     else calls[index] = next;
   }
   return indent + statement(calls);
 }
-export function updateClip(source, id, properties) {
-  const { clip } = getClip(source, id),
-    lines = source.split("\n");
-  lines[clip.line] = changedLine(lines[clip.line], properties);
+export function updateClips(source, changes) {
+  const model = compile(source),
+    lines = source.split("\n"),
+    seen = new Set();
+  for (const { id, properties } of changes) {
+    const clip = model.clips.find((c) => c.id === id);
+    if (!clip || seen.has(id))
+      throw new Error("Select distinct existing clips.");
+    seen.add(id);
+    if (
+      clip.locked &&
+      Object.keys(properties).some((key) => !["locked", "hidden"].includes(key))
+    )
+      throw new Error("Clip is locked. Unlock it before editing.");
+    lines[clip.line] = changedLine(lines[clip.line], properties);
+  }
   const next = lines.join("\n");
   compile(next);
   return next;
+}
+export function updateClip(source, id, properties) {
+  return updateClips(source, [{ id, properties }]);
+}
+export function renameClip(source, id, label) {
+  return updateClip(source, id, { label });
+}
+export function moveClips(source, ids, delta) {
+  if (!Number.isFinite(delta) || !ids.length)
+    throw new Error("Select clips and a finite offset.");
+  const model = compile(source),
+    clips = [...new Set(ids)].map((id) => {
+      const clip = model.clips.find((c) => c.id === id);
+      if (!clip) throw new Error("Clip not found.");
+      return clip;
+    });
+  delta = Math.max(
+    -Math.min(...clips.map((c) => c.at)),
+    Math.min(
+      model.duration - Math.max(...clips.map((c) => c.at + c.for)),
+      delta,
+    ),
+  );
+  return updateClips(
+    source,
+    clips.map((c) => ({ id: c.id, properties: { at: rounded(c.at + delta) } })),
+  );
+}
+function requireUnlocked(clip) {
+  if (clip.locked) throw new Error("Clip is locked. Unlock it before editing.");
 }
 export function timingBounds(clip, duration) {
   return {
@@ -86,6 +144,7 @@ export function resizeClip(source, id, edge, time) {
   return updateClip(source, id, changes);
 }
 export function splitClip(source, id, time) {
+  requireUnlocked(getClip(source, id).clip);
   const { model, clip } = getClip(source, id),
     left = rounded(time - clip.at),
     right = rounded(clip.for - left);
@@ -120,6 +179,7 @@ export function splitClip(source, id, time) {
   return { source: next, id: newId };
 }
 export function duplicateClip(source, id) {
+  requireUnlocked(getClip(source, id).clip);
   const { model, clip } = getClip(source, id),
     lines = source.split("\n"),
     calls = parseStatement(lines[clip.line].trim(), clip.line + 1);
@@ -134,6 +194,7 @@ export function duplicateClip(source, id) {
   return { source: next, id: newId };
 }
 export function deleteClip(source, id) {
+  requireUnlocked(getClip(source, id).clip);
   const { clip } = getClip(source, id),
     lines = source.split("\n");
   lines.splice(clip.line, 1);
@@ -235,4 +296,35 @@ export function pasteClip(source, payload, time) {
     [...imports, changedLine(statement(calls), { at })].join("\n");
   compile(next);
   return { source: next, id };
+}
+
+export function reorderClip(source, id, direction) {
+  const { model, clip } = getClip(source, id);
+  requireUnlocked(clip);
+  if (![-1, 1].includes(direction)) throw new Error("Use backward or forward.");
+  const index = model.clips.indexOf(clip),
+    other = model.clips[index + direction];
+  if (!other) return source;
+  const lines = source.split("\n");
+  [lines[clip.line], lines[other.line]] = [lines[other.line], lines[clip.line]];
+  const next = lines.join("\n");
+  compile(next);
+  return next;
+}
+export function deleteClips(source, ids) {
+  const model = compile(source),
+    remove = new Set(ids),
+    lines = new Set();
+  for (const id of remove) {
+    const clip = model.clips.find((c) => c.id === id);
+    if (!clip) throw new Error("Clip not found.");
+    requireUnlocked(clip);
+    lines.add(clip.line);
+  }
+  const next = source
+    .split("\n")
+    .filter((_, i) => !lines.has(i))
+    .join("\n");
+  compile(next);
+  return next;
 }

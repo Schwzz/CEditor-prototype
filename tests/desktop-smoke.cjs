@@ -88,7 +88,7 @@ async function field(id, value, event = "change") {
   );
   await sleep(80);
 }
-async function drag(from, to) {
+async function drag(from, to, during = null) {
   window.webContents.sendInputEvent({
     type: "mouseMove",
     x: Math.round(from.x),
@@ -102,8 +102,10 @@ async function drag(from, to) {
     clickCount: 1,
   });
   for (let step = 1; step <= 5; step++) {
+    if (step === 3 && during) await during();
     window.webContents.sendInputEvent({
       type: "mouseMove",
+      modifiers: ["leftButtonDown"],
       x: Math.round(from.x + ((to.x - from.x) * step) / 5),
       y: Math.round(from.y + ((to.y - from.y) * step) / 5),
     });
@@ -162,6 +164,16 @@ app
     );
     passed("local sandboxed desktop shell and restricted preload");
     const original = await source();
+    await require("./editing-desktop.cjs")({
+      page,
+      click,
+      field,
+      replaceCode,
+      source,
+      key,
+      drag,
+      passed,
+    });
     await field("param-title", "DESKTOP TEST", "input");
     assert.match(await source(), /DESKTOP TEST/);
     passed("template controls update composition");

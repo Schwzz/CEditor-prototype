@@ -189,6 +189,12 @@ export function compile(source) {
       fail(line, "Clip names must be unique.");
     const clip = {
       id: root.args[0],
+      label: root.args[0],
+      hidden: 0,
+      locked: 0,
+      scale: 1,
+      rotation: 0,
+      opacity: 1,
       type: root.name,
       line: index,
       at: 0,
@@ -228,7 +234,14 @@ export function compile(source) {
     const seen = new Set();
     for (const call of parsed) {
       if (
-        !allowed[root.name].includes(call.name) ||
+        ![
+          ...allowed[root.name],
+          "label",
+          "hidden",
+          "locked",
+          "opacity",
+          ...(root.name === "scene" ? [] : ["scale", "rotation"]),
+        ].includes(call.name) ||
         call.args.length !== (call.name === "position" ? 2 : 1) ||
         seen.has(call.name)
       )
@@ -268,8 +281,36 @@ export function compile(source) {
       "color",
       "sourceAt",
       "sourceDuration",
+      "label",
+      "hidden",
+      "locked",
+      "scale",
+      "rotation",
+      "opacity",
     ])
       clip[key] = resolve(clip[key], clip.line + 1);
+    if (
+      typeof clip.label !== "string" ||
+      !clip.label.trim() ||
+      (clip.label !== clip.id && clip.label.length > 160)
+    )
+      fail(clip.line + 1, "Labels need 1–160 characters.");
+    if (![0, 1].includes(clip.hidden) || ![0, 1].includes(clip.locked))
+      fail(clip.line + 1, "Hidden and locked use 0 or 1.");
+    if (
+      !Number.isFinite(clip.scale) ||
+      clip.scale < 0.1 ||
+      clip.scale > 4 ||
+      !Number.isFinite(clip.rotation) ||
+      Math.abs(clip.rotation) > 360 ||
+      !Number.isFinite(clip.opacity) ||
+      clip.opacity < 0 ||
+      clip.opacity > 1
+    )
+      fail(
+        clip.line + 1,
+        "Scale: 0.1–4; rotation: -360–360 degrees; opacity: 0–1.",
+      );
     if (clip.position) {
       clip.position = clip.position.map((value) =>
         resolve(value, clip.line + 1),
@@ -360,7 +401,9 @@ export function decodeTemplate(hash) {
   return source;
 }
 export function visibleClips(model, time) {
-  return model.clips.filter((c) => time >= c.at && time < c.at + c.for);
+  return model.clips.filter(
+    (c) => !c.hidden && time >= c.at && time < c.at + c.for,
+  );
 }
 
 export { calls as parseStatement };

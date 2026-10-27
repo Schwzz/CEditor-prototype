@@ -44,16 +44,22 @@ const selectionField = StateField.define({
     value = value.map(transaction.changes);
     for (const effect of transaction.effects)
       if (effect.is(selectedLine)) {
-        value =
-          effect.value === null
-            ? Decoration.none
-            : Decoration.set([
-                Decoration.line({ class: "cm-clip-line" }).range(
-                  transaction.state.doc.line(
-                    Math.min(effect.value + 1, transaction.state.doc.lines),
-                  ).from,
-                ),
-              ]);
+        const lines = Array.isArray(effect.value)
+          ? effect.value
+          : effect.value === null
+            ? []
+            : [effect.value];
+        value = Decoration.set(
+          [...new Set(lines)]
+            .sort((a, b) => a - b)
+            .map((line) =>
+              Decoration.line({ class: "cm-clip-line" }).range(
+                transaction.state.doc.line(
+                  Math.min(line + 1, transaction.state.doc.lines),
+                ).from,
+              ),
+            ),
+        );
       }
     return value;
   },
@@ -210,7 +216,7 @@ export function createEditor(
     },
     highlightLine(line, { scroll = false } = {}) {
       const effects = [selectedLine.of(line)];
-      if (scroll && line !== null)
+      if (scroll && line !== null && !Array.isArray(line))
         effects.push(
           EditorView.scrollIntoView(
             view.state.doc.line(Math.min(line + 1, view.state.doc.lines)).from,

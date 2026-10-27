@@ -3,6 +3,7 @@ import { DocumentStore } from "../core/document.mjs";
 import { DEFAULT_SOURCE, TEMPLATES, replaceParam } from "../core/engine.mjs";
 import {
   updateClip,
+  deleteClips,
   resizeClip,
   splitClip,
   duplicateClip,
@@ -13,7 +14,9 @@ import {
   timingBounds,
 } from "../core/operations.mjs";
 import { createEditor } from "./editor.mjs";
+import { defaultPosition } from "./geometry.mjs";
 import { createPreview } from "./preview.mjs";
+import { createLayerLabel, renameClip } from "./layers.mjs";
 import { createTimeline } from "./timeline.mjs";
 import { mountGuide } from "./guide.mjs";
 
@@ -126,14 +129,18 @@ function seek(time) {
   updateTime();
   preview.draw();
 }
-function selectClip(id, { reveal = true } = {}) {
+function selectClip(
+  id,
+  { reveal = true, toggle = false, preserve = false } = {},
+) {
   const clip = store.model.clips.find((clip) => clip.id === id);
   if (clip && reveal && (current < clip.at || current >= clip.at + clip.for)) {
     setPlaying(false);
     current = clip.at + Math.min(0.7, clip.for / 2);
     updateTime();
   }
-  store.select(id);
+  if (!preserve || !store.selectedIds.includes(id))
+    store.select(id, { toggle });
   const selected = store.model.clips.find((clip) => clip.id === store.selected);
   editor.highlightLine(selected?.line ?? null, { scroll: reveal });
   preview.draw();
@@ -180,6 +187,13 @@ const timeline = createTimeline({
   onCommit: commit,
   onPreview: (model) => preview.draw(model),
   onPause: () => setPlaying(false),
+  makeLabel: (clip) =>
+    createLayerLabel(clip, {
+      store,
+      onSelect: selectClip,
+      onCommit: commit,
+      onError: toast,
+    }),
   onContext: openContext,
   onError: toast,
 });
@@ -281,25 +295,16 @@ function renderParams() {
       input.disabled = !!store.error || fileBusy;
     });
 }
-function defaultPosition(clip) {
-  return (
-    clip.position || [
-      clip.type === "shape" ? 1380 : clip.place === "center" ? 960 : 95,
-      clip.type === "shape"
-        ? 548
-        : clip.place === "bottom"
-          ? 864
-          : clip.place === "center"
-            ? 470
-            : 343,
-    ]
-  );
-}
 function renderSelection() {
   const clip = store.model.clips.find((clip) => clip.id === store.selected);
   $("selectionCard").hidden = !clip;
   if (!clip) return;
-  $("selectedName").textContent = clip.id;
+  $("selectedName").textContent =
+    store.selectedIds.length > 1
+      ? store.selectedIds.length + " clips · " + clip.label
+      : clip.label;
+  $("clipLabel").value = clip.label;
+  $("clipLabel").disabled = !!store.error || fileBusy || !!clip.locked;
   const bounds = timingBounds(clip, store.model.duration);
   const values = {
     clipStart: clip.at,
@@ -310,22 +315,28 @@ function renderSelection() {
     const [x, y] = defaultPosition(clip);
     values.positionX = x;
     values.positionY = y;
+    values.objectScale = clip.scale;
+    values.objectRotation = clip.rotation;
+    values.objectOpacity = clip.opacity;
   }
   for (const [id, value] of Object.entries(values)) {
     const field = $(id);
     if (field.value !== String(+value.toFixed(3)))
       field.value = +value.toFixed(3);
-    field.disabled = !!store.error || fileBusy;
+    field.disabled = !!store.error || fileBusy || !!clip.locked;
   }
   $("clipStart").max = store.model.duration - clip.for;
   $("clipEnd").min = bounds.endMin;
   $("clipEnd").max = bounds.endMax;
   $("clipDuration").max = bounds.endMax - clip.at;
   $("positionFields").hidden = clip.type === "scene";
+  $("transformFields").hidden = clip.type === "scene";
   $("selectionHelp").textContent =
     clip.type === "scene"
       ? "Background scenes fill the frame. Resize their timeline edges to change timing."
-      : "Drag the preview to move. Arrow keys nudge the focused preview; Shift moves 10px.";
+      : clip.locked
+        ? "Locked · unlock with the square button beside this layer."
+        : "Corners resize · round handle rotates · Shift rotates in 15° steps. Numeric controls edit the primary selected object.";
 }
 function scheduleRender(event = { type: "edit" }) {
   if (event.type !== "selection") fullRender = true;
@@ -341,7 +352,11 @@ function render(full = true) {
   editor.setReadOnly(fileBusy || booting);
   editor.setSource(store.source);
   const selected = store.model.clips.find((clip) => clip.id === store.selected);
-  editor.highlightLine(selected?.line ?? null);
+  editor.highlightLine(
+    store.model.clips
+      .filter((c) => store.selectedIds.includes(c.id))
+      .map((c) => c.line),
+  );
   if (full) {
     renderParams();
     timeline.render();
@@ -369,7 +384,7 @@ function render(full = true) {
     : "Code, preview, and timeline are in sync";
   $("previewHint").textContent = store.error
     ? "Preview of the last valid composition"
-    : "Click an object to select · drag to move";
+    : "Drag to move · corners resize · round handle rotates";
   $("undo").disabled = !store.canUndo || fileBusy;
   $("redo").disabled = !store.canRedo || fileBusy;
   $("dirtyBadge").hidden = !store.dirty;
@@ -463,6 +478,52 @@ for (const id of ["positionX", "positionY"])
       );
     });
   });
+for (const [id, key] of [
+  ["objectScale", "scale"],
+  ["objectRotation", "rotation"],
+  ["objectOpacity", "opacity"],
+])
+  $(id).onchange = () => {
+    if (store.error || fileBusy || !store.selected) return;
+    setPlaying(false);
+    attempt(() =>
+      commit(
+        updateClip(store.source, store.selected, {
+          [key]: $(id).valueAsNumber,
+        }),
+        "Set object " + key,
+      ),
+    );
+  };
+$("clipLabel").onchange = () =>
+  attempt(() =>
+    commit(
+      renameClip(store.source, store.selected, $("clipLabel").value),
+      "Rename layer",
+    ),
+  );
+$("timelineZoom").oninput = () => {
+  timeline.cancel();
+  timeline.setZoom($("timelineZoom").valueAsNumber);
+  $("zoomLabel").textContent = $("timelineZoom").value + "×";
+};
+$("timelineSnap").onclick = () => {
+  const enabled = $("timelineSnap").getAttribute("aria-pressed") !== "true";
+  $("timelineSnap").setAttribute("aria-pressed", String(enabled));
+  timeline.setSnap(enabled);
+};
+const stepFrame = (direction) =>
+  seek(
+    Math.max(
+      0,
+      Math.min(
+        store.model.duration,
+        (Math.round(current * 30) + direction) / 30,
+      ),
+    ),
+  );
+$("previousFrame").onclick = () => stepFrame(-1);
+$("nextFrame").onclick = () => stepFrame(1);
 $("clearSelection").onclick = () => selectClip(null);
 $("play").onclick = () => {
   if (current >= store.model.duration) current = 0;
@@ -662,6 +723,14 @@ function openContext(id, x, y, anchor) {
   for (const button of menu.querySelectorAll("button")) {
     button.disabled =
       !!store.error || (!store.selected && button.dataset.command !== "paste");
+    const target = store.model.clips.find((c) => c.id === store.selected);
+    if (
+      target?.locked &&
+      ["split", "cut", "duplicate", "delete", "timing"].includes(
+        button.dataset.command,
+      )
+    )
+      button.disabled = true;
     if (button.dataset.command === "split") {
       const clip = store.model.clips.find((clip) => clip.id === store.selected);
       button.disabled =
@@ -771,7 +840,11 @@ async function command(name) {
         result.id,
       );
     } else if (name === "delete")
-      commit(deleteClip(store.source, store.selected), "Delete clip", null);
+      commit(
+        deleteClips(store.source, store.selectedIds),
+        "Delete selected clips",
+        null,
+      );
   } catch (error) {
     toast(errorMessage(error));
     scheduleRender();
@@ -804,6 +877,10 @@ document.addEventListener("keydown", (event) => {
       void command(keys[event.key.toLowerCase()]);
       return;
     }
+  }
+  if (!editing() && !modifier && [",", "."].includes(event.key)) {
+    event.preventDefault();
+    stepFrame(event.key === "." ? 1 : -1);
   }
   if (event.key === "F1") {
     event.preventDefault();
