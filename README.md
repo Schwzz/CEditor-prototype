@@ -1,31 +1,35 @@
-# CEditor prototype · Framecode
+# Framecode · CEditor desktop prototype
 
-A small, Strudel-inspired experiment in **writing video compositions as code**, seeing the same composition on a timeline, and passing the code along as an editable template.
+A Windows desktop experiment in **code + timeline + direct preview editing**. A small composition language describes procedural motion, and every panel edits the same document.
 
-This is an interaction prototype. It uses a deliberately small motion language and procedural canvas graphics, rather than a full video-editing engine or actual Strudel syntax.
+This is a prototype for testing the interaction model. It does not import or export actual video yet.
 
-## Try it
+## Get the Windows app
 
-Requires Node.js 22 or newer. There are no runtime dependencies and no build step.
+1. Open this repository's **Actions** tab, then **Windows desktop prototype**.
+2. Open a successful run and download **Framecode-Windows-x64** under Artifacts. GitHub may require you to sign in to download it.
+3. Extract the ZIP and run `Framecode-0.3.0-win-x64-portable.exe`, or use the `setup.exe` build to install the app and create shortcuts.
 
-```sh
-npm start
-```
+The packaged app includes its runtime. You do not need Node.js, a separate terminal, a browser tab, a server, or an account to use it. These prototype builds are unsigned. Artifacts are retained for 30 days; a new workflow run rebuilds them.
 
-Open `http://localhost:5173`. Serve the files over HTTP; opening `index.html` directly will not load the JavaScript modules correctly.
+## First five minutes
 
-1. Change `param("title", "MAKE IT MOVE.")` in the code. The preview and timeline text follow automatically.
-2. Click the Headline clip. Its source line highlights and the timing inspector appears. Change its start or length, drag it, or use Left/Right to nudge it by 0.1 seconds. The code updates too.
-3. Adjust title, subtitle, accent color, and animation tempo using the template controls. Controls are generated from `param()` declarations.
-4. Play, pause, loop, jump to the start, or scrub the preview and timeline ruler.
-5. Open **Templates** to remix one of three example looks.
-6. Open **Share template** to copy the code, copy a remix link, or try the snapshot as an editable copy. A remix link contains a snapshot in the URL fragment; it does not publish anything or grant site access.
+- Press **F1** or open **Code guide**. It contains nine lessons, a language reference, complete editable examples, and exercises.
+- Change a title in the code or the template controls. Both update the preview and timeline.
+- Select a code line, timeline clip, or visible preview object. Selection follows across panels.
+- Drag a text/shape corner handle to resize uniformly or its round handle to rotate (Shift snaps rotation to 15°). Scale, rotation, opacity, and X/Y fields allow exact values. Cyan guides snap the selected object’s visual center to the frame center while moving.
+- Drag text or shapes in the preview to reposition them. The app pauses playback and writes `.position(x, y)` into the code. Precise X/Y fields and arrow-key movement are available too.
+- Ctrl-click or Shift-click clips to select several, then drag or nudge them together. Use Zoom (1×–4×), Snap, and the frame-step buttons; comma/period also step by 1/30 second.
+- Rename the primary selection in **Layer name**. Beside each timeline layer, ↑ moves it backward, ↓ moves it forward, ◉ toggles visibility, and □ toggles its lock. Later source statements draw in front.
+- Drag timeline clips to move them. Pull either edge to resize, or enter exact start/end/length values in the inspector.
+- Right-click a clip, or press **Shift+F10** on it, for split, cut/copy/paste, duplicate, delete, and timing controls.
+- Save the composition as a local `.framecode.json` project.
 
-Your draft is saved in this browser's local storage. A syntax error keeps the last valid composition visible, including after reload. Resetting or loading a template offers a short-lived Undo action.
+**Undo/Redo is shared across the workspace.** Each completed pointer drag is one undo step. Loading a guide example, resetting, or loading a template is undoable. New/Open resets history after handling unsaved changes.
 
-## Small motion language
+## Editing and timing rules
 
-Each statement occupies one line. Use double-quoted strings, numbers, and `$parameter` references. Full-line `//` comments are supported.
+Each clip has a unique quoted stable key, such as `text("title-1")`. Use `.label("Title")` to rename its display name while keeping selection and references intact. Editing the root key intentionally creates a different identity. Each complete statement occupies one line. Use double-quoted strings, numbers such as `0.5`, `$parameter` references, and whole-line `//` comments.
 
 ```js
 composition("Orbit study").duration(12)
@@ -35,41 +39,87 @@ param("tempo", 1)
 
 scene("Backdrop").at(0).for(12).look("orbit")
 text("Headline").at(0.4).for(10.8).value($title).place("left").motion("rise")
-shape("Signal").at(0).for(12).color($accent).motion("orbit")
+shape("Signal").at(0).for(12).color($accent).position(1380, 548).motion("orbit")
 ```
 
-| Part | Supported values |
+| Setting | Meaning |
 | --- | --- |
-| Timing | `.at(startSeconds)` and `.for(durationSeconds)` |
-| Text placement | `left`, `center`, `bottom` |
-| Motion | `rise`, `fade`, `orbit`, `pulse`, `none` |
-| Background look | `orbit`, `pulse`, `grid` |
-| Colors | Six-digit hex, e.g. `#d6fa69` |
-| Composition limits | 1–60 seconds, up to 24 clips, 50,000 source characters |
-| Tempo | 0.2–3; changes motion speed, not clip timing |
+| `.label("Title")` | Display name; the root statement key remains its identity. |
+| `.hidden(1)` / `.locked(1)` | Hide / lock a layer; `0` restores it. Locks guard visual editing and destructive commands; you can still deliberately edit its code or shared template parameters. |
+| `.scale(1.5).rotation(45).opacity(0.5)` | Text/shape transforms: scale 0.1–4, rotation -360–360 degrees, opacity 0–1. Rotation adds to procedural motion and opacity multiplies it. |
+| `.at(2).for(3)` | Start at 2 seconds, last 3 seconds, end at 5 seconds. |
+| `.position(x, y)` | Logical-pixel anchor in a 1920×1080 frame; text uses its baseline, shapes use their center. |
+| Text `.place()` | `left`, `center`, `bottom`; an explicit position overrides preset coordinates. Bottom placement also uses a smaller caption font. |
+| `.motion()` | `rise`, `fade`, `orbit`, `pulse`, `none`. |
+| Scene `.look()` | `orbit`, `pulse`, `grid`. |
+| Shape `.color()` | A six-digit hex string or color parameter. |
+| `.sourceAt()` / `.sourceDuration()` | Generated by splitting to retain the original animation phase and end. Trims on split pieces respect this source window. |
+| `param("tempo", 1)` | Motion speed between 0.2 and 3; clip timing does not change. |
 
-The parser validates this restricted language; it never evaluates arbitrary JavaScript. The example renderer demonstrates one active background and one active signal shape, plus text layers. Some motion styles share the same introductory fade; this is not a general animation API.
+The frame is drawn in source order; later clips appear above earlier clips. The renderer supports multiple shapes and text layers. Put a full-frame background before the objects it should sit behind.
 
-## Scope
+The language is restricted and **never evaluates arbitrary JavaScript**. It supports compositions from 1 to 60 seconds, at most 24 clips, and up to 50,000 source characters. Split pieces must be at least 0.1 seconds long. There are no loops, imports, arbitrary functions, or multiline statements.
 
-Implemented: live code editing, a linked editable timeline, procedural preview, parameter controls, three example templates, snapshot remixing, local draft persistence, error recovery, and keyboard controls.
+Copy/Paste uses a versioned clip snapshot. Referenced parameters are imported; conflicting parameter values receive new names rather than modifying the target composition. Duplicate preserves bindings. Paste starts at the playhead when possible and clamps its start to fit. Split and clipboard Cut are different commands. Copy/Cut/Duplicate/Split and exact inspector fields operate on the primary selected clip. Timeline group drag/nudge and Delete operate on all selected clips; preview movement excludes hidden layers; one locked member rejects the entire edit. Locks and visibility are preserved in project source. Older builds cannot interpret the new methods.
 
-Outside this prototype: imported video/images/audio, trimming real media, keyframe editing, waveform editing, video export, cloud project storage, live collaboration, user accounts, and a template marketplace. The deployed preview is owner-private; the GitHub source uses this repository's existing visibility. Local development has no authentication.
+## Local files and recovery
 
-## Validation
+Projects store the composition code, parameter declarations, and last valid composition. Invalid drafts can be saved: errors remain visible while their last valid preview is preserved.
+
+Open, Save, and Save As use Windows file dialogs. New, Open, and Close offer **Save / Discard / Cancel** when the project is dirty. Writes use a temporary file and atomic replacement; a cancelled or failed save does not mark the document clean.
+
+An unsaved recovery copy is stored in the app's per-user application-data folder, typically `%APPDATA%\Framecode`. On relaunch, restore it as a new unsaved project or explicitly discard it. Restoring a draft does not silently overwrite its former project file. Recovery is a convenience, not a versioned backup system.
+
+For templates, use **Template source** to copy the full composition code or save a separate project file. This desktop prototype has no hosted sharing service.
+
+## Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+N / Ctrl+O | New / Open project |
+| Ctrl+S / Ctrl+Shift+S | Save / Save As |
+| Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Shared Undo / Redo |
+| Ctrl+F / Ctrl+Enter | Search code / Run |
+| Space outside editable fields and buttons | Play / Pause |
+| F1 | Code guide |
+| Comma / Period outside editable fields | Previous / Next frame at 30 fps |
+| Ctrl-click / Shift-click timeline or preview objects | Toggle selection |
+| Shift+F10 on a timeline clip | Clip context menu |
+| Left / Right on a clip or edge | Nudge timing by 0.1 seconds |
+| Shift+Left / Shift+Right on clip body | Nudge clip by 1 second |
+| Arrow keys on focused preview | Move selected object 1 pixel; Shift moves 10 pixels |
+| Ctrl+C / Ctrl+X / Ctrl+V outside editable fields | Copy / Cut / Paste clips |
+| Ctrl+D / Delete / S outside editable fields | Duplicate / Delete / Split selected clip |
+
+## Development
+
+Requires Node.js 22+ and npm. On Windows PowerShell, use `npm.cmd` if local policy prevents running `npm.ps1`.
+
+```sh
+npm ci
+npm start
+```
+
+`npm start` builds and launches the desktop app. The development command uses a terminal; the packaged executable does not.
 
 ```sh
 npm run check
 npm test
+npm run build
+npm run test:desktop
+npm run dist:win
 ```
 
-GitHub Actions runs the syntax checks and engine tests on pushes and pull requests. See [VALIDATION.md](VALIDATION.md) for the interaction checks performed on this prototype.
+`dist:win` produces a Windows x64 portable executable and an NSIS installer under `release/`. Windows CI is the supported packaging environment. The workflow runs desktop integration tests, packages the app, launches the packaged executable, and uploads the installers and SHA256 checksums.
 
-## Files
+## Code boundaries
 
-- `dist/index.html`, `dist/style.css`: the responsive editing workspace and dialogs.
-- `dist/app.mjs`: UI state, canvas preview, timeline, draft storage, and template interactions.
-- `dist/engine.mjs`: restricted parser, parameter resolution, source updates, and snapshot encoding.
-- `tests/engine.test.mjs`: behavior and regression checks for the composition engine.
-- `scripts/serve.mjs`: dependency-free local static server.
-- `.openai/hosting.json`: private preview deployment configuration.
+- `src/core/`: restricted parser, validated source operations, document history. No Electron or DOM dependencies.
+- `src/renderer/`: CodeMirror editor, preview geometry/hit testing, timeline, guide, and document controller.
+- `desktop/`: native window, restricted preload bridge, dialogs, clipboard, and atomic project/recovery files.
+- `scripts/`: bundling, syntax checks, desktop test runner, and packaged-Windows launch check.
+- `tests/`: core/filesystem tests and actual Electron integration checks. Native dialog choices are substituted by test fixtures; filesystem writes and renderer interactions are real.
+
+The renderer is sandboxed with Node integration disabled, context isolation enabled, restricted IPC, a local asset protocol, and a Content Security Policy. No HTTP server or remote content is needed. No plugin loader or AI-agent endpoint is exposed.
+
+See [VALIDATION.md](VALIDATION.md) for verification scope and [docs/ROADMAP.md](docs/ROADMAP.md) for later work.

@@ -189,6 +189,12 @@ export function compile(source) {
       fail(line, "Clip names must be unique.");
     const clip = {
       id: root.args[0],
+      label: root.args[0],
+      hidden: 0,
+      locked: 0,
+      scale: 1,
+      rotation: 0,
+      opacity: 1,
       type: root.name,
       line: index,
       at: 0,
@@ -198,22 +204,52 @@ export function compile(source) {
       motion: "fade",
       look: "orbit",
       color: "#d6fa69",
+      position: null,
+      sourceAt: 0,
+      sourceDuration: null,
+      hasSourceWindow: false,
     };
     const allowed = {
-      scene: ["at", "for", "look"],
-      text: ["at", "for", "value", "place", "motion"],
-      shape: ["at", "for", "color", "motion"],
+      scene: ["at", "for", "look", "sourceAt", "sourceDuration"],
+      text: [
+        "at",
+        "for",
+        "value",
+        "place",
+        "motion",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+      ],
+      shape: [
+        "at",
+        "for",
+        "color",
+        "motion",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+      ],
     };
     const seen = new Set();
     for (const call of parsed) {
       if (
-        !allowed[root.name].includes(call.name) ||
-        call.args.length !== 1 ||
+        ![
+          ...allowed[root.name],
+          "label",
+          "hidden",
+          "locked",
+          "opacity",
+          ...(root.name === "scene" ? [] : ["scale", "rotation"]),
+        ].includes(call.name) ||
+        call.args.length !== (call.name === "position" ? 2 : 1) ||
         seen.has(call.name)
       )
         fail(line, `Unsupported or repeated method: .${call.name}().`);
       seen.add(call.name);
-      clip[call.name] = call.args[0];
+      clip[call.name] = call.name === "position" ? call.args : call.args[0];
+      if (["sourceAt", "sourceDuration"].includes(call.name))
+        clip.hasSourceWindow = true;
     }
     result.clips.push(clip);
   });
@@ -243,8 +279,59 @@ export function compile(source) {
       "motion",
       "look",
       "color",
+      "sourceAt",
+      "sourceDuration",
+      "label",
+      "hidden",
+      "locked",
+      "scale",
+      "rotation",
+      "opacity",
     ])
       clip[key] = resolve(clip[key], clip.line + 1);
+    if (
+      typeof clip.label !== "string" ||
+      !clip.label.trim() ||
+      (clip.label !== clip.id && clip.label.length > 160)
+    )
+      fail(clip.line + 1, "Labels need 1–160 characters.");
+    if (![0, 1].includes(clip.hidden) || ![0, 1].includes(clip.locked))
+      fail(clip.line + 1, "Hidden and locked use 0 or 1.");
+    if (
+      !Number.isFinite(clip.scale) ||
+      clip.scale < 0.1 ||
+      clip.scale > 4 ||
+      !Number.isFinite(clip.rotation) ||
+      Math.abs(clip.rotation) > 360 ||
+      !Number.isFinite(clip.opacity) ||
+      clip.opacity < 0 ||
+      clip.opacity > 1
+    )
+      fail(
+        clip.line + 1,
+        "Scale: 0.1–4; rotation: -360–360 degrees; opacity: 0–1.",
+      );
+    if (clip.position) {
+      clip.position = clip.position.map((value) =>
+        resolve(value, clip.line + 1),
+      );
+      if (
+        !clip.position.every(
+          (value) => Number.isFinite(value) && Math.abs(value) <= 100000,
+        )
+      )
+        fail(clip.line + 1, "Position needs two finite pixel coordinates.");
+    }
+    clip.sourceDuration ??= clip.sourceAt + clip.for;
+    if (
+      !Number.isFinite(clip.sourceAt) ||
+      clip.sourceAt < 0 ||
+      !Number.isFinite(clip.sourceDuration) ||
+      clip.sourceDuration <= 0 ||
+      clip.sourceDuration > 60 ||
+      clip.sourceAt + clip.for > clip.sourceDuration + 0.000001
+    )
+      fail(clip.line + 1, "Clip exceeds its animation source window.");
     if (
       !Number.isFinite(clip.at) ||
       clip.at < 0 ||
@@ -314,5 +401,9 @@ export function decodeTemplate(hash) {
   return source;
 }
 export function visibleClips(model, time) {
-  return model.clips.filter((c) => time >= c.at && time < c.at + c.for);
+  return model.clips.filter(
+    (c) => !c.hidden && time >= c.at && time < c.at + c.for,
+  );
 }
+
+export { calls as parseStatement };

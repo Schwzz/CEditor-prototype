@@ -3,17 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#17191a" />
     <meta
-      name="description"
-      content="A private playground for code-based motion. Write a score, see the timeline, remix a template."
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
     />
-    <title>Framecode — Motion, written.</title>
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d6fa69'/%3E%3Cpath d='M9 8h15v4H13v4h9v4h-9v6H9z' fill='%2317191a'/%3E%3C/svg%3E"
-    />
-    <link rel="stylesheet" href="/style.css" />
+    <title>Framecode — Desktop prototype</title>
+    <link rel="stylesheet" href="app.css" />
   </head>
   <body>
     <svg class="icons" xmlns="http://www.w3.org/2000/svg">
@@ -68,33 +63,44 @@
       </defs>
     </svg>
     <header class="app-header">
-      <a class="brand" href="/" aria-label="Framecode home"
-        ><span class="brand-mark">f<span>↗</span></span
-        >framecode<span class="version">LAB</span></a
-      >
+      <div class="brand">
+        <span class="brand-mark">f<span>↗</span></span
+        >framecode<span class="version">DESKTOP LAB</span>
+      </div>
       <div class="breadcrumb">
-        <span>Playground</span><span>/</span
-        ><strong id="projectName">Orbit study</strong>
+        <span>Project</span><span>/</span
+        ><strong id="projectName">Orbit study</strong
+        ><span id="dirtyBadge" hidden>Unsaved</span>
       </div>
       <div class="header-actions">
-        <span class="private-label"
-          ><svg><use href="#i-lock" /></svg>Private prototype</span
-        ><button class="button quiet" id="openTemplates">
+        <button class="button quiet" id="openTemplates">
           <svg><use href="#i-grid" /></svg>Templates</button
-        ><button class="button primary" id="openShare">
-          <svg><use href="#i-share" /></svg>Share template
+        ><button class="button quiet" id="openShare">
+          <svg><use href="#i-code" /></svg>Template source</button
+        ><button class="button primary" id="openGuide">
+          <svg><use href="#i-help" /></svg>Code guide <kbd>F1</kbd>
         </button>
       </div>
     </header>
+    <div class="project-toolbar">
+      <div class="file-actions">
+        <button id="newProject">New</button
+        ><button id="openProject">Open…</button
+        ><button id="saveProject">Save <kbd>Ctrl S</kbd></button
+        ><button id="saveAsProject">Save As…</button
+        ><span class="toolbar-divider"></span
+        ><button id="undo" disabled>↶ Undo</button
+        ><button id="redo" disabled>↷ Redo</button>
+      </div>
+      <span id="fileName" title="Local project">Untitled.framecode.json</span>
+    </div>
     <main>
       <div class="intro">
         <div>
           <span class="eyebrow">MOTION, WRITTEN.</span>
           <h1>A little code. A moving idea.</h1>
         </div>
-        <button class="button quiet help" id="openHelp">
-          <svg><use href="#i-help" /></svg>How it works
-        </button>
+        <span class="desktop-note">WINDOWS PROTOTYPE · LOCAL PROJECTS</span>
       </div>
       <div class="workspace">
         <section
@@ -103,48 +109,33 @@
         >
           <div class="panel-header">
             <div class="panel-title">
-              <svg><use href="#i-code" /></svg><span>Composition</span
-              ><span class="file-label">.frame</span>
+              <svg><use href="#i-code" /></svg>Composition<span
+                class="file-label"
+                >.frame</span
+              >
             </div>
             <div class="source-actions">
               <button
                 class="icon-button"
                 id="reset"
-                title="Reset to original example"
                 aria-label="Reset example"
+                title="Reset to the original composition"
               >
                 <svg><use href="#i-reset" /></svg></button
               ><button class="button run" id="run">
-                <svg><use href="#i-play" /></svg>Run<span class="keyhint"
-                  >⌘ ↵</span
-                >
+                Run <span class="keyhint">Ctrl ↵</span>
               </button>
             </div>
           </div>
-          <div class="code-wrap" id="codeWrap">
-            <div class="line-numbers" id="lineNumbers" aria-hidden="true"></div>
-            <div class="code-surface">
-              <pre id="highlight" aria-hidden="true"></pre>
-              <textarea
-                id="source"
-                aria-label="Composition source code"
-                spellcheck="false"
-                autocapitalize="off"
-                autocomplete="off"
-                wrap="off"
-              ></textarea>
-            </div>
-          </div>
+          <div id="editor" class="editor-host"></div>
           <div class="code-status">
             <span id="compileStatus" role="status"
-              ><span class="status-dot"></span>Live · changes run
-              automatically</span
+              >Live · changes run automatically</span
             ><span id="lineCount">13 lines</span>
           </div>
           <div class="error-box" id="error" hidden role="alert"></div>
           <div class="source-footnote">
-            <span class="small-icon">↳</span> Edit a value. Watch the timeline
-            follow.
+            ↳ Select a line, a preview object, or a timeline clip.
           </div>
         </section>
         <section class="panel preview-panel" aria-label="Motion preview">
@@ -152,27 +143,27 @@
             <div class="panel-title">
               <span class="status-dot"></span>Preview
             </div>
-            <span class="muted mono"
-              >1920 × 1080 <span class="separator">/</span> 30 FPS</span
-            >
+            <span class="muted mono">1920 × 1080 / 30 fps timebase</span>
           </div>
           <div class="stage-area">
             <div class="preview-caption">
               <span id="previewLabel">ORBIT STUDY</span
-              ><span id="draftBadge">EXPERIMENT 001</span>
+              ><span id="draftBadge">SELECT + DRAG OBJECTS</span>
             </div>
             <div class="canvas-shell">
               <canvas
                 id="canvas"
                 width="1920"
                 height="1080"
-                aria-label="Animated composition preview"
+                tabindex="0"
+                role="img"
+                aria-label="Composition preview: select and drag text or shapes"
               ></canvas>
               <div class="paused-chip" id="pausedChip">PAUSED</div>
             </div>
             <div class="stage-bottom">
-              <span
-                ><span class="status-dot"></span> Rendered from your code</span
+              <span id="previewHint"
+                >Click an object to select · drag to move</span
               ><span>16:9</span>
             </div>
           </div>
@@ -181,7 +172,6 @@
               <button
                 class="icon-button"
                 id="restart"
-                title="Jump to start"
                 aria-label="Jump to start"
               >
                 <svg><use href="#i-skip" /></svg></button
@@ -192,7 +182,6 @@
                 id="loop"
                 aria-label="Loop preview"
                 aria-pressed="true"
-                title="Loop preview"
               >
                 <svg><use href="#i-loop" /></svg>
               </button>
@@ -201,7 +190,21 @@
               <strong id="currentTime">00:02.00</strong><span>/</span
               ><span id="totalTime">00:12.00</span>
             </div>
-            <span class="space-key">space</span>
+            <div class="frame-tools">
+              <button
+                id="previousFrame"
+                aria-label="Previous frame"
+                title="Previous frame (,)"
+              >
+                ‹ frame</button
+              ><button
+                id="nextFrame"
+                aria-label="Next frame"
+                title="Next frame (.)"
+              >
+                frame ›
+              </button>
+            </div>
           </div>
           <input
             class="seek"
@@ -210,7 +213,7 @@
             min="0"
             max="12"
             value="2"
-            step="0.01"
+            step="any"
             aria-label="Preview playhead time in seconds"
           />
         </section>
@@ -228,11 +231,9 @@
             <div id="params" class="parameters"></div>
             <div class="param-note">
               <svg><use href="#i-code" /></svg
-              ><span
-                >Controls come from <code>param()</code> in your code.</span
-              >
+              ><span>Created by <code>param()</code> in your code.</span>
             </div>
-            <div class="selection-card" id="selectionCard" hidden>
+            <div id="selectionCard" class="selection-card" hidden>
               <div class="selection-top">
                 <span class="eyebrow">SELECTED CLIP</span
                 ><button
@@ -244,18 +245,30 @@
                 </button>
               </div>
               <strong id="selectedName"></strong>
+              <label class="layer-rename"
+                >Layer name<input
+                  id="clipLabel"
+                  type="text"
+                  maxlength="160"
+                  aria-label="Layer display name"
+              /></label>
               <div class="timing-fields">
                 <label
-                  >Start <span>s</span
-                  ><input
+                  >Start · s<input
                     id="clipStart"
                     type="number"
                     step="0.1"
                     min="0"
                     aria-label="Selected clip start in seconds" /></label
                 ><label
-                  >Length <span>s</span
-                  ><input
+                  >End · s<input
+                    id="clipEnd"
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    aria-label="Selected clip end in seconds" /></label
+                ><label
+                  >Length · s<input
                     id="clipDuration"
                     type="number"
                     step="0.1"
@@ -263,10 +276,55 @@
                     aria-label="Selected clip duration in seconds"
                 /></label>
               </div>
+              <div id="positionFields" class="position-fields">
+                <label
+                  >X · px<input
+                    id="positionX"
+                    type="number"
+                    step="1"
+                    aria-label="Selected object X position" /></label
+                ><label
+                  >Y · px<input
+                    id="positionY"
+                    type="number"
+                    step="1"
+                    aria-label="Selected object Y position"
+                /></label>
+              </div>
+              <div id="transformFields" class="timing-fields transform-fields">
+                <label
+                  >Scale ×<input
+                    id="objectScale"
+                    type="number"
+                    min="0.1"
+                    max="4"
+                    step="0.05"
+                    aria-label="Selected object scale" /></label
+                ><label
+                  >Rotation °<input
+                    id="objectRotation"
+                    type="number"
+                    min="-360"
+                    max="360"
+                    step="1"
+                    aria-label="Selected object rotation" /></label
+                ><label
+                  >Opacity<input
+                    id="objectOpacity"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    aria-label="Selected object opacity"
+                /></label>
+              </div>
+              <p class="selection-help" id="selectionHelp">
+                Drag the preview to move. Drag a clip edge to resize.
+              </p>
             </div>
           </div>
           <div class="template-footer">
-            <span id="saveStatus">Draft saved on this device</span>
+            <span id="saveStatus" role="status">Ready · local project</span>
           </div>
         </aside>
       </div>
@@ -275,7 +333,28 @@
           <div class="timeline-title">
             <span class="panel-title">Timeline</span
             ><span class="count-badge" id="clipCount">4 clips</span
-            ><span class="timeline-hint">Click to inspect · drag to move</span>
+            ><span class="timeline-hint"
+              >Drag to move · pull edges to resize · right-click for tools</span
+            >
+          </div>
+          <div class="timeline-tools">
+            <button
+              id="timelineSnap"
+              aria-pressed="true"
+              title="Snap to frames, clip edges and playhead"
+            >
+              Snap</button
+            ><label
+              >Zoom
+              <input
+                id="timelineZoom"
+                type="range"
+                min="1"
+                max="4"
+                step="0.5"
+                value="1"
+                aria-label="Timeline zoom" /></label
+            ><output id="zoomLabel">1×</output>
           </div>
           <div class="timeline-meta">
             <span class="link-status">↔ Linked to code</span
@@ -286,7 +365,7 @@
           <div class="timeline-grid" id="timeline">
             <div class="ruler-row">
               <div class="track-label ruler-label">
-                TRACK <span>SECONDS →</span>
+                LAYERS <span>BACK → FRONT ↓</span>
               </div>
               <div class="ruler" id="ruler" title="Click to seek"></div>
             </div>
@@ -295,18 +374,15 @@
           </div>
         </div>
         <div class="timeline-footer">
-          <span
-            ><span class="status-dot"></span
-            ><span id="timelineStatus"
-              >Code and timeline are in sync</span
-            ></span
+          <span id="timelineStatus">Code and timeline are in sync</span
           ><span class="mono">A SCORE FOR THE SCREEN.</span>
         </div>
       </section>
       <footer class="app-footer">
         <span>Built to explore an idea.</span
         ><span
-          >Code → Timeline → Motion <span class="footer-mark">↗</span></span
+          >Ctrl Z / Ctrl Shift Z · Undo / Redo
+          <span class="footer-mark">↗</span></span
         >
       </footer>
     </main>
@@ -321,121 +397,99 @@
         </button>
       </div>
       <p class="modal-description">
-        Small compositions. Open code. Make an editable copy and change the
-        feeling.
+        Load a composition and make it yours. Undo restores the previous
+        version.
       </p>
       <div id="templateGallery" class="template-gallery"></div>
-      <p class="dialog-note">
-        Loading a template replaces this draft. Your previous version is
-        available with Undo.
-      </p>
     </dialog>
     <dialog id="shareDialog" class="modal">
       <div class="modal-heading">
         <div>
-          <span class="eyebrow">FROM COMPOSITION TO TEMPLATE</span>
+          <span class="eyebrow">EDITABLE TEMPLATES</span>
           <h2>Pass the idea along.</h2>
         </div>
-        <button class="icon-button close-dialog" aria-label="Close sharing">
+        <button
+          class="icon-button close-dialog"
+          aria-label="Close template source"
+        >
           <svg><use href="#i-close" /></svg>
         </button>
-      </div>
-      <div class="share-card">
-        <span class="share-art">f<span>↗</span></span>
-        <div>
-          <strong id="shareName"></strong><span id="shareDetails"></span>
-        </div>
-        <span class="code-tag">OPEN CODE</span>
       </div>
       <p class="modal-description">
-        This snapshot includes the code and exposed parameters. Anyone with site
-        access can open their own editable copy.
+        Copy the complete composition code or save a project file. The recipient
+        can open and edit their own copy in Framecode.
       </p>
-      <label class="field-label" for="shareCode"
-        >Template source <span>SNAPSHOT</span></label
-      ><textarea
-        class="share-code"
+      <textarea
         id="shareCode"
+        class="share-code"
         readonly
         spellcheck="false"
-        aria-label="Shared template source"
+        aria-label="Template source code"
       ></textarea>
       <div class="share-actions">
-        <button class="button secondary" id="copyCode">
-          <svg><use href="#i-code" /></svg>Copy code</button
-        ><button class="button secondary" id="copyLink">
-          <svg><use href="#i-share" /></svg>Copy remix link
+        <button id="copyCode" class="button secondary">
+          Copy composition code</button
+        ><button id="saveTemplate" class="button primary">
+          Save template as project…
         </button>
       </div>
-      <button class="button primary full" id="remixSnapshot">
-        Try as an editable copy<svg><use href="#i-arrow" /></svg>
-      </button>
-      <div class="privacy-note">
-        <svg><use href="#i-lock" /></svg>Private link. Your site’s access rules
-        still apply.
-      </div>
     </dialog>
-    <dialog id="helpDialog" class="modal">
+    <dialog id="guideDialog" class="modal guide-modal">
       <div class="modal-heading">
         <div>
-          <span class="eyebrow">YOUR FIRST 30 SECONDS</span>
-          <h2>Write. Watch. Remix.</h2>
+          <span class="eyebrow">LEARN BY CHANGING SOMETHING</span>
+          <h2>The code guide.</h2>
         </div>
-        <button class="icon-button close-dialog" aria-label="Close help">
+        <button class="icon-button close-dialog" aria-label="Close code guide">
           <svg><use href="#i-close" /></svg>
         </button>
       </div>
-      <ol class="help-steps">
-        <li>
-          <span>01</span>
-          <div>
-            <strong>Change the score.</strong>
-            <p>
-              Edit the title or a clip’s <code>.at()</code> and
-              <code>.for()</code>. Valid changes run automatically.
-            </p>
-          </div>
-        </li>
-        <li>
-          <span>02</span>
-          <div>
-            <strong>Follow the timeline.</strong>
-            <p>
-              Scrub the ruler, select a clip, or drag it. Timing edits write
-              back into the code.
-            </p>
-          </div>
-        </li>
-        <li>
-          <span>03</span>
-          <div>
-            <strong>Make it reusable.</strong>
-            <p>
-              Adjust template controls, then share a snapshot and try it as an
-              editable copy.
-            </p>
-          </div>
-        </li>
-      </ol>
-      <div class="syntax-note">
-        <strong>A small motion language</strong>
-        <p>
-          <code>scene</code>, <code>text</code> and <code>shape</code> create
-          clips. Text supports
-          <code>.place("left" | "center" | "bottom")</code>; motion supports
-          <code>"rise"</code>, <code>"fade"</code>, <code>"orbit"</code>,
-          <code>"pulse"</code> or <code>"none"</code>. Scenes support
-          <code>.look("orbit" | "pulse" | "grid")</code>. Times are in seconds.
-        </p>
-        <p>
-          This is an interaction prototype with procedural graphics. Media
-          import, audio and video export are outside this demo.
-        </p>
+      <div class="guide-layout">
+        <nav id="guideTopics" aria-label="Guide topics"></nav>
+        <article id="guideContent"></article>
       </div>
     </dialog>
-    <div class="toast" id="toast" role="status" hidden>
-      <span id="toastMessage"></span><button id="undo" hidden>Undo</button>
+    <dialog id="recoveryDialog" class="modal">
+      <h2>Recover your draft?</h2>
+      <p class="modal-description">
+        An unsaved composition was found from a previous session. Restore it as
+        a new unsaved project, or discard the recovery copy.
+      </p>
+      <div class="share-actions">
+        <button id="discardRecovery" class="button secondary">
+          Discard recovery</button
+        ><button id="restoreRecovery" class="button primary">
+          Restore draft
+        </button>
+      </div>
+    </dialog>
+    <div
+      id="clipMenu"
+      class="clip-menu"
+      role="menu"
+      aria-label="Clip tools"
+      hidden
+    >
+      <button role="menuitem" data-command="split">
+        Split at playhead <kbd>S</kbd></button
+      ><button role="menuitem" data-command="timing">Set timing…</button>
+      <hr />
+      <button role="menuitem" data-command="cut">Cut <kbd>Ctrl X</kbd></button
+      ><button role="menuitem" data-command="copy">
+        Copy <kbd>Ctrl C</kbd></button
+      ><button role="menuitem" data-command="paste">
+        Paste at playhead <kbd>Ctrl V</kbd></button
+      ><button role="menuitem" data-command="duplicate">
+        Duplicate <kbd>Ctrl D</kbd>
+      </button>
+      <hr />
+      <button role="menuitem" data-command="delete">
+        Delete <kbd>Del</kbd>
+      </button>
     </div>
-    <script type="module" src="/app.mjs"></script>
+    <div class="toast" id="toast" role="status" hidden>
+      <span id="toastMessage"></span>
+    </div>
+    <script src="app.js" defer></script>
   </body>
 </html>

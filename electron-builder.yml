@@ -1,0 +1,27 @@
+appId: dev.schwzz.framecode
+productName: Framecode
+asar: true
+directories:
+  output: release
+files:
+  - build/renderer/**
+  - desktop/**
+  - src/core/engine.mjs
+  - assets/**
+  - package.json
+win:
+  icon: assets/icon.ico
+  target:
+    - target: portable
+      arch: [x64]
+    - target: nsis
+      arch: [x64]
+portable:
+  artifactName: Framecode-${version}-win-${arch}-portable.${ext}
+nsis:
+  artifactName: Framecode-${version}-win-${arch}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
