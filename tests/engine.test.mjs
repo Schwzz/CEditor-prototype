@@ -81,3 +81,49 @@ test("parameter dictionaries safely preserve names shared with Object.prototype"
     "remixed",
   );
 });
+test("image clips compile with required properties", () => {
+  const source = `composition("Test").duration(5)
+image("Test Image").at(1).for(2).source("test.jpg")`;
+  const m = compile(source);
+  assert.equal(m.clips.length, 1);
+  assert.equal(m.clips[0].type, "image");
+  assert.equal(m.clips[0].source, "test.jpg");
+  assert.equal(m.clips[0].fit, "contain");
+  assert.equal(m.clips[0].at, 1);
+  assert.equal(m.clips[0].for, 2);
+});
+test("image clips support different fit modes", () => {
+  const sources = [
+    'image("Test").at(0).for(1).source("test.jpg").fit("contain")',
+    'image("Test").at(0).for(1).source("test.jpg").fit("cover")',
+    'image("Test").at(0).for(1).source("test.jpg").fit("fill")',
+  ];
+  for (const source of sources) {
+    const m = compile(`composition("Test").duration(1)\n${source}`);
+    assert.equal(m.clips[0].type, "image");
+    assert.equal(m.clips[0].fit, source.match(/fit\("([^"]+)"\)/)[1]);
+  }
+});
+test("image clips reject invalid fit modes", () => {
+  assert.throws(
+    () => compile('composition("Test").duration(12)\nimage("Test").source("test.jpg").fit("invalid")'),
+    /Fit supports "contain", "cover", or "fill"\./
+  );
+});
+test("image clips require source path", () => {
+  assert.throws(
+    () => compile('composition("Test").duration(12)\nimage("Test")'),
+    /Image clips require a source path\./
+  );
+  assert.throws(
+    () => compile('composition("Test").duration(12)\nimage("Test").source("")'),
+    /Image clips require a source path\./
+  );
+});
+test("image clips support position parameter", () => {
+  const source = `composition("Test").duration(5)
+image("Test Image").at(1).for(2).source("test.jpg").position(100, 200)`;
+  const m = compile(source);
+  assert.equal(m.clips[0].type, "image");
+  assert.deepEqual(m.clips[0].position, [100, 200]);
+});

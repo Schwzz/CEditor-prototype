@@ -177,7 +177,7 @@ export function compile(source) {
       result.paramLines[root.args[0]] = index;
       return;
     }
-    if (!["scene", "text", "shape"].includes(root.name))
+    if (!["scene", "text", "shape", "image"].includes(root.name))
       fail(line, `Unknown function: ${root.name}.`);
     if (
       root.args.length !== 1 ||
@@ -208,6 +208,8 @@ export function compile(source) {
       sourceAt: 0,
       sourceDuration: null,
       hasSourceWindow: false,
+      source: "",
+      fit: "contain",
     };
     const allowed = {
       scene: ["at", "for", "look", "sourceAt", "sourceDuration"],
@@ -229,6 +231,17 @@ export function compile(source) {
         "position",
         "sourceAt",
         "sourceDuration",
+      ],
+      image: [
+        "at",
+        "for",
+        "source",
+        "fit",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+        "scale",
+        "rotation",
       ],
     };
     const seen = new Set();
@@ -279,6 +292,8 @@ export function compile(source) {
       "motion",
       "look",
       "color",
+      "source",
+      "fit",
       "sourceAt",
       "sourceDuration",
       "label",
@@ -353,6 +368,12 @@ export function compile(source) {
       fail(clip.line + 1, 'Look supports "orbit", "pulse", or "grid".');
     if (typeof clip.color !== "string" || !/^#[0-9a-f]{6}$/i.test(clip.color))
       fail(clip.line + 1, 'Colors use six-digit hex, such as "#d6fa69".');
+    if (clip.type === "image") {
+      if (typeof clip.source !== "string" || !clip.source.trim())
+        fail(clip.line + 1, 'Image clips require a source path.');
+      if (!["contain", "cover", "fill"].includes(clip.fit))
+        fail(clip.line + 1, 'Fit supports "contain", "cover", or "fill".');
+    }
   }
   if (
     "tempo" in result.params &&

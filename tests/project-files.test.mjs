@@ -93,3 +93,9 @@ test("new layer and transform methods persist in version1 projects", () => {
   const value = { ...project(), source, lastValid: source };
   assert.deepEqual(decodeProject(encodeProject(value)), value);
 });
+test("image clips persist in version1 projects", () => {
+  const source =
+    'composition("Images").duration(10)\nimage("Photo").at(0).for(10).source("C:/path/to/image.jpg").fit("cover")';
+  const value = { ...project(), source, lastValid: source };
+  assert.deepEqual(decodeProject(encodeProject(value)), value);
+});

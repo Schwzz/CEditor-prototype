@@ -15,6 +15,7 @@ import {
 } from "../core/operations.mjs";
 import { createEditor } from "./editor.mjs";
 import { defaultPosition } from "./geometry.mjs";
+import { ImageCache } from "./renderer.mjs";
 import { createPreview } from "./preview.mjs";
 import { createLayerLabel, renameClip } from "./layers.mjs";
 import { createTimeline } from "./timeline.mjs";
@@ -24,6 +25,10 @@ const $ = (id) => document.getElementById(id),
   desktop = window.framecodeDesktop;
 if (!desktop) throw new Error("Launch Framecode from the desktop application.");
 const store = new DocumentStore();
+const imageCache = new ImageCache();
+imageCache.subscribe(() => {
+  if (!playing) scheduleRender();
+});
 let current = 2,
   playing = false,
   loop = true,
@@ -175,6 +180,7 @@ const preview = createPreview($("canvas"), {
   onPause: () => setPlaying(false),
   onCommit: commit,
   onError: toast,
+  imageCache,
 });
 const timeline = createTimeline({
   store,
@@ -540,10 +546,35 @@ $("run").onclick = () => {
   if (store.error) toast(store.error.message);
   else toast("Composition is up to date.");
 };
+if ($("importImage")) {
+  $("importImage").onclick = async () => {
+    if (fileBusy || booting) return;
+    let path;
+    try {
+      path = await desktop.importImage();
+    } catch (error) {
+      toast(errorMessage(error));
+      return;
+    }
+    if (!path) return;
+    // Re-importing (re-authorizing) a file must evict any failed cache
+    // entry for it so a previously failed image actually reloads.
+    imageCache.evict(path);
+    const baseName = path.split(/[/\\]/).pop().split(".")[0].replace(/[^\w]/g, "_") || "Image";
+    let name = baseName;
+    let i = 1;
+    while (store.model.clips.some((c) => c.id === name)) {
+      name = `${baseName}_${i++}`;
+    }
+    const nextSource = store.source.trimEnd() + `\nimage(${JSON.stringify(name)}).at(${Math.floor(current)}).for(5).source(${JSON.stringify(path)})`;
+    commit(nextSource, "Import image");
+  };
+}
 $("reset").onclick = () => {
   setPlaying(false);
   commit(DEFAULT_SOURCE, "Reset example", null);
   current = 2;
+  imageCache.clearAll();
 };
 for (const button of document.querySelectorAll(".close-dialog"))
   button.onclick = () => button.closest("dialog").close();
@@ -672,6 +703,7 @@ async function fileCommand(command) {
       fileName = loaded.name;
       filePath = loaded.path;
       store.load(loaded.project);
+      imageCache.clearAll();
       const cleared = await clearRecoveryAfterAdoption();
       $("saveStatus").textContent = cleared
         ? "Project opened locally"
@@ -682,6 +714,7 @@ async function fileCommand(command) {
       fileName = "Untitled.framecode.json";
       filePath = null;
       store.load({ source: DEFAULT_SOURCE, lastValid: DEFAULT_SOURCE });
+      imageCache.clearAll();
       const cleared = await clearRecoveryAfterAdoption();
       $("saveStatus").textContent = cleared
         ? "New local project"
@@ -916,12 +949,24 @@ async function boot() {
         $("recoveryDialog").addEventListener("cancel", (event) =>
           event.preventDefault(),
         );
-        $("restoreRecovery").onclick = () => {
+        $("restoreRecovery").onclick = async () => {
           store.load(recovery, { dirty: true });
+          imageCache.clearAll();
           $("recoveryDialog").close();
           $("saveStatus").textContent =
             "Recovered draft · save as a new project";
           resolve();
+          // Authorization is granted only by the main process through a
+          // native consent dialog; evicting prior failed entries lets
+          // restored images actually load and render.
+          try {
+            const relink = await desktop.relinkRecoveryAssets();
+            for (const granted of relink?.authorized || [])
+              imageCache.evict(granted);
+            if (relink?.authorized?.length) render();
+          } catch {
+            // Relink is best-effort; the draft stays usable without images.
+          }
         };
         $("discardRecovery").onclick = async () => {
           try {
