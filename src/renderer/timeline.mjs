@@ -6,6 +6,7 @@ const colors = {
   scene: ["#344337", "#52664b", "#bed2af"],
   text: ["#343447", "#5d5978", "#c2b9e1"],
   shape: ["#4a3c2a", "#77623c", "#ddc69d"],
+  image: ["#3c4a2a", "#62773c", "#c6dd9d"],
 };
 export function createTimeline({
   store,

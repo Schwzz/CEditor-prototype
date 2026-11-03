@@ -28,14 +28,14 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 const selectedLine = StateEffect.define(),
   programmatic = Annotation.define();
 const colors = HighlightStyle.define([
-  { tag: tags.comment, color: "#7d8b83" },
+  { tag: tags.comment, color: "#8b9691" },
   { tag: tags.string, color: "#d4c596" },
   { tag: tags.number, color: "#b6a1e8" },
   {
     tag: [tags.keyword, tags.function(tags.variableName), tags.propertyName],
     color: "#a7c4e5",
   },
-  { tag: tags.variableName, color: "#dce2d9" },
+  { tag: tags.variableName, color: "#e9ece8" },
   { tag: tags.operator, color: "#b9caab" },
 ]);
 const selectionField = StateField.define({
@@ -160,40 +160,40 @@ export function createEditor(
           {
             "&": {
               height: "100%",
-              backgroundColor: "#191b1d",
-              color: "#dce2d9",
+              backgroundColor: "#121516",
+              color: "#e9ece8",
             },
             ".cm-scroller": {
               overflow: "auto",
-              fontFamily: 'Consolas, "Liberation Mono", monospace',
-              fontSize: "12px",
-              lineHeight: "25px",
+              fontFamily: 'Consolas, "Cascadia Mono", "Liberation Mono", monospace',
+              fontSize: "12.5px",
+              lineHeight: "20px",
             },
-            ".cm-content": { padding: "18px 0 60px", caretColor: "#d6fa69" },
-            ".cm-line": { padding: "0 14px" },
+            ".cm-content": { padding: "14px 0 48px", caretColor: "#d6fa69" },
+            ".cm-line": { padding: "0 12px" },
             ".cm-gutters": {
-              backgroundColor: "#191b1d",
-              color: "#64716b",
+              backgroundColor: "#121516",
+              color: "#6f7a75",
               border: "none",
             },
             ".cm-lineNumbers .cm-gutterElement": {
-              padding: "0 8px 0 12px",
-              minWidth: "38px",
+              padding: "0 8px 0 10px",
+              minWidth: "34px",
             },
             ".cm-activeLineGutter": {
-              backgroundColor: "#293024",
+              backgroundColor: "#1b1f21",
               color: "#d6fa69",
             },
-            ".cm-activeLine": { backgroundColor: "#ffffff04" },
+            ".cm-activeLine": { backgroundColor: "#ffffff05" },
             ".cm-clip-line": {
               backgroundColor: "#d6fa6910",
               boxShadow: "inset 2px 0 #d6fa6980",
             },
             ".cm-cursor": { borderLeftColor: "#d6fa69" },
             ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-              backgroundColor: "#738b4c45",
+              backgroundColor: "#d6fa6926",
             },
-            ".cm-panels": { backgroundColor: "#242a23", color: "#dbe4d7" },
+            ".cm-panels": { backgroundColor: "#1b1f21", color: "#e9ece8" },
           },
           { dark: true },
         ),

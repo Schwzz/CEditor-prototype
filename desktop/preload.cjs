@@ -4,6 +4,15 @@ contextBridge.exposeInMainWorld(
   "framecodeDesktop",
   Object.freeze({
     platform: process.platform,
+    get assetToken() {
+      try {
+        return (
+          new URLSearchParams(window.location.search).get("token") || ""
+        );
+      } catch {
+        return "";
+      }
+    },
     openProject: () => invoke("project:open"),
     saveProject: (project, saveAs = false) =>
       invoke("project:save", project, saveAs),
@@ -13,6 +22,8 @@ contextBridge.exposeInMainWorld(
     readRecovery: () => invoke("recovery:read"),
     writeRecovery: (project) => invoke("recovery:write", project),
     clearRecovery: () => invoke("recovery:clear"),
+    relinkRecoveryAssets: () => invoke("recovery:relink"),
+    importImage: () => invoke("image:import"),
     readClipboard: () => invoke("clipboard:read"),
     writeClipboard: (text) => invoke("clipboard:write", text),
     editClipboard: (action) => invoke("editor:clipboard", action),

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url),
   executable = require("electron");
@@ -8,6 +8,14 @@ const flags =
     : [];
 const environment = { ...process.env };
 delete environment.ELECTRON_RUN_AS_NODE;
+// Fresh build: the desktop exercise must never prove a stale bundle.
+const build = spawnSync(process.execPath, ["scripts/build.mjs"], {
+  stdio: "inherit",
+});
+if (build.status !== 0) {
+  console.error("Fresh build failed; refusing to run the desktop test.");
+  process.exit(build.status ?? 1);
+}
 let completed = false;
 const child = spawn(executable, [...flags, "tests/desktop-smoke.cjs"], {
   stdio: ["inherit", "pipe", "inherit"],

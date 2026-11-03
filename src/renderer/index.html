@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: framecode:; font-src 'self'; connect-src 'self' framecode:; base-uri 'none'; form-action 'none'; frame-src 'none'"
     />
-    <title>Framecode — Desktop prototype</title>
+    <title>Framecode</title>
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
@@ -64,44 +64,43 @@
     </svg>
     <header class="app-header">
       <div class="brand">
-        <span class="brand-mark">f<span>↗</span></span
-        >framecode<span class="version">DESKTOP LAB</span>
+        <span class="brand-mark" aria-hidden="true">f</span>
+        <span class="brand-name">framecode</span>
       </div>
       <div class="breadcrumb">
-        <span>Project</span><span>/</span
-        ><strong id="projectName">Orbit study</strong
-        ><span id="dirtyBadge" hidden>Unsaved</span>
+        <strong id="projectName">Orbit study</strong>
+        <span id="dirtyBadge" hidden>Unsaved</span>
+      </div>
+      <div class="file-actions" role="group" aria-label="Project file">
+        <button id="newProject" aria-keyshortcuts="Control+N">New</button
+        ><button id="openProject" aria-keyshortcuts="Control+O">Open…</button
+        ><button id="saveProject" aria-keyshortcuts="Control+S">
+          Save <kbd>Ctrl S</kbd></button
+        ><button id="saveAsProject" aria-keyshortcuts="Control+Shift+S">
+          Save As…</button
+        ><span class="toolbar-divider" aria-hidden="true"></span
+        ><button id="undo" aria-keyshortcuts="Control+Z" disabled>Undo</button
+        ><button id="redo" aria-keyshortcuts="Control+Shift+Z" disabled>
+          Redo
+        </button>
       </div>
       <div class="header-actions">
         <button class="button quiet" id="openTemplates">
-          <svg><use href="#i-grid" /></svg>Templates</button
+          <svg aria-hidden="true"><use href="#i-grid" /></svg>Templates</button
         ><button class="button quiet" id="openShare">
-          <svg><use href="#i-code" /></svg>Template source</button
-        ><button class="button primary" id="openGuide">
-          <svg><use href="#i-help" /></svg>Code guide <kbd>F1</kbd>
+          <svg aria-hidden="true"><use href="#i-code" /></svg>Template source</button
+        ><button
+          class="icon-button"
+          id="openGuide"
+          aria-label="Code guide"
+          title="Code guide (F1)"
+          aria-keyshortcuts="F1"
+        >
+          <svg aria-hidden="true"><use href="#i-help" /></svg>
         </button>
       </div>
     </header>
-    <div class="project-toolbar">
-      <div class="file-actions">
-        <button id="newProject">New</button
-        ><button id="openProject">Open…</button
-        ><button id="saveProject">Save <kbd>Ctrl S</kbd></button
-        ><button id="saveAsProject">Save As…</button
-        ><span class="toolbar-divider"></span
-        ><button id="undo" disabled>↶ Undo</button
-        ><button id="redo" disabled>↷ Redo</button>
-      </div>
-      <span id="fileName" title="Local project">Untitled.framecode.json</span>
-    </div>
     <main>
-      <div class="intro">
-        <div>
-          <span class="eyebrow">MOTION, WRITTEN.</span>
-          <h1>A little code. A moving idea.</h1>
-        </div>
-        <span class="desktop-note">WINDOWS PROTOTYPE · LOCAL PROJECTS</span>
-      </div>
       <div class="workspace">
         <section
           class="panel source-panel"
@@ -109,10 +108,7 @@
         >
           <div class="panel-header">
             <div class="panel-title">
-              <svg><use href="#i-code" /></svg>Composition<span
-                class="file-label"
-                >.frame</span
-              >
+              Composition<span class="file-label">.frame</span>
             </div>
             <div class="source-actions">
               <button
@@ -121,8 +117,12 @@
                 aria-label="Reset example"
                 title="Reset to the original composition"
               >
-                <svg><use href="#i-reset" /></svg></button
-              ><button class="button run" id="run">
+                <svg aria-hidden="true"><use href="#i-reset" /></svg></button
+              ><button
+                class="button run"
+                id="run"
+                aria-keyshortcuts="Control+Enter"
+              >
                 Run <span class="keyhint">Ctrl ↵</span>
               </button>
             </div>
@@ -134,22 +134,18 @@
             ><span id="lineCount">13 lines</span>
           </div>
           <div class="error-box" id="error" hidden role="alert"></div>
-          <div class="source-footnote">
-            ↳ Select a line, a preview object, or a timeline clip.
-          </div>
         </section>
         <section class="panel preview-panel" aria-label="Motion preview">
           <div class="panel-header">
             <div class="panel-title">
-              <span class="status-dot"></span>Preview
+              <span class="status-dot" aria-hidden="true"></span>Preview
             </div>
-            <span class="muted mono">1920 × 1080 / 30 fps timebase</span>
+            <div class="preview-meta">
+              <span id="previewLabel">ORBIT STUDY</span>
+              <span class="muted mono">1920 × 1080 · 30 fps</span>
+            </div>
           </div>
           <div class="stage-area">
-            <div class="preview-caption">
-              <span id="previewLabel">ORBIT STUDY</span
-              ><span id="draftBadge">SELECT + DRAG OBJECTS</span>
-            </div>
             <div class="canvas-shell">
               <canvas
                 id="canvas"
@@ -164,7 +160,7 @@
             <div class="stage-bottom">
               <span id="previewHint"
                 >Click an object to select · drag to move</span
-              ><span>16:9</span>
+              >
             </div>
           </div>
           <div class="transport">
@@ -217,21 +213,14 @@
             aria-label="Preview playhead time in seconds"
           />
         </section>
-        <aside class="panel template-panel">
+        <aside class="panel template-panel" aria-label="Inspector">
           <div class="panel-header">
-            <div class="panel-title">
-              <svg><use href="#i-spark" /></svg>Template controls
-            </div>
+            <div class="panel-title">Inspector</div>
           </div>
           <div class="template-body">
-            <div class="template-heading">
-              <span class="eyebrow">MAKE IT YOURS</span>
-              <p>The same composition.<br />Your own signature.</p>
-            </div>
             <div id="params" class="parameters"></div>
             <div class="param-note">
-              <svg><use href="#i-code" /></svg
-              ><span>Created by <code>param()</code> in your code.</span>
+              <span>Created by <code>param()</code> in your code.</span>
             </div>
             <div id="selectionCard" class="selection-card" hidden>
               <div class="selection-top">
@@ -323,22 +312,21 @@
               </p>
             </div>
           </div>
-          <div class="template-footer">
-            <span id="saveStatus" role="status">Ready · local project</span>
-          </div>
         </aside>
       </div>
       <section class="panel timeline-panel" aria-label="Composition timeline">
         <div class="timeline-header">
           <div class="timeline-title">
             <span class="panel-title">Timeline</span
-            ><span class="count-badge" id="clipCount">4 clips</span
-            ><span class="timeline-hint"
-              >Drag to move · pull edges to resize · right-click for tools</span
-            >
+            ><span class="count-badge" id="clipCount">4 clips</span>
           </div>
           <div class="timeline-tools">
             <button
+              id="importImage"
+              title="Import image clip"
+            >
+              Import image…</button
+            ><button
               id="timelineSnap"
               aria-pressed="true"
               title="Snap to frames, clip edges and playhead"
@@ -357,35 +345,28 @@
             ><output id="zoomLabel">1×</output>
           </div>
           <div class="timeline-meta">
-            <span class="link-status">↔ Linked to code</span
-            ><span id="durationLabel">12.0s</span>
+            <span id="durationLabel">12.0s</span>
           </div>
         </div>
         <div class="timeline-scroll">
           <div class="timeline-grid" id="timeline">
             <div class="ruler-row">
-              <div class="track-label ruler-label">
-                LAYERS <span>BACK → FRONT ↓</span>
-              </div>
+              <div class="track-label ruler-label">Layers</div>
               <div class="ruler" id="ruler" title="Click to seek"></div>
             </div>
             <div id="tracks"></div>
             <div class="playhead" id="playhead"><span></span></div>
           </div>
         </div>
-        <div class="timeline-footer">
-          <span id="timelineStatus">Code and timeline are in sync</span
-          ><span class="mono">A SCORE FOR THE SCREEN.</span>
-        </div>
       </section>
-      <footer class="app-footer">
-        <span>Built to explore an idea.</span
-        ><span
-          >Ctrl Z / Ctrl Shift Z · Undo / Redo
-          <span class="footer-mark">↗</span></span
-        >
-      </footer>
     </main>
+    <footer class="status-bar">
+      <span id="fileName" title="Local project">Untitled.framecode.json</span>
+      <span class="status-spacer"></span>
+      <span id="saveStatus" role="status">Ready · local project</span>
+      <span class="status-divider" aria-hidden="true"></span>
+      <span id="timelineStatus">Code, preview, and timeline are in sync</span>
+    </footer>
     <dialog id="templatesDialog" class="modal wide">
       <div class="modal-heading">
         <div>

@@ -5,8 +5,85 @@ import {
   transformHandles,
 } from "./geometry.mjs";
 import { visibleClips } from "../core/engine.mjs";
+
 export const WIDTH = 1920,
   HEIGHT = 1080;
+
+export class ImageCache {
+  static MAX_ENTRIES = 64;
+  #cache = new Map();
+  #loading = new Set();
+  #failed = new Set();
+  #listeners = new Set();
+
+  // Same-origin asset URL (framecode://app/assets keeps the page origin, so
+  // drawn images never taint the preview canvas). Built identically by
+  // every cache API entry so keys match everywhere.
+  #url(source) {
+    const token = window.framecodeDesktop?.assetToken || "";
+    return (
+      "framecode://app/assets/?path=" +
+      encodeURIComponent(source) +
+      (token ? "&token=" + token : "")
+    );
+  }
+
+  get(source) {
+    if (!source) return null;
+    const url = this.#url(source);
+    const cached = this.#cache.get(url);
+    if (cached) return cached;
+    if (this.#loading.has(url) || this.#failed.has(url)) return null;
+
+    this.#loading.add(url);
+    const img = new Image();
+    img.onload = () => {
+      this.#cache.set(url, img);
+      this.#loading.delete(url);
+      this.#evictIfNeeded();
+      this.#emit(url);
+    };
+    img.onerror = () => {
+      this.#loading.delete(url);
+      this.#failed.add(url);
+      this.#emit(url);
+    };
+    img.src = url;
+    return null;
+  }
+  evict(source) {
+    const url = this.#url(source);
+    this.#cache.delete(url);
+    this.#failed.delete(url);
+  }
+  clearAll() {
+    this.#cache.clear();
+    this.#loading.clear();
+    this.#failed.clear();
+  }
+  size() {
+    return this.#cache.size;
+  }
+  hasFailed(source) {
+    return this.#failed.has(this.#url(source));
+  }
+
+  subscribe(listener) {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #evictIfNeeded() {
+    while (this.#cache.size > ImageCache.MAX_ENTRIES) {
+      this.#cache.delete(this.#cache.keys().next().value);
+    }
+  }
+
+  #emit(source) {
+    for (const listener of this.#listeners) listener(source);
+  }
+}
+
 const clamp = (value) => Math.max(0, Math.min(1, value));
 const ease = (value) => 1 - (1 - clamp(value)) ** 3;
 export function motionState(clip, time, tempo = 1) {
@@ -34,7 +111,7 @@ function wrap(ctx, value, width, font) {
   if (line) lines.push(line);
   return lines.slice(0, 5);
 }
-export function frameGeometry(ctx, model, time) {
+export function frameGeometry(ctx, model, time, imageCache = null) {
   return visibleClips(model, time).map((clip) => {
     const motion = motionState(clip, time, Number(model.params.tempo) || 1);
     if (clip.type === "scene")
@@ -73,6 +150,51 @@ export function frameGeometry(ctx, model, time) {
         pulse,
         width: 750,
         height: 750,
+      };
+    }
+    if (clip.type === "image") {
+      const [x, y] = defaultPosition(clip);
+      const img = imageCache?.get(clip.source);
+      let imgW = 1280, imgH = 720;
+      if (img) {
+        const baseBoxW = 1280;
+        const baseBoxH = 720;
+        const aspect = img.width / img.height;
+        const boxAspect = baseBoxW / baseBoxH;
+        if (clip.fit === "fill") {
+          imgW = baseBoxW;
+          imgH = baseBoxH;
+        } else if (clip.fit === "cover") {
+          if (aspect > boxAspect) {
+            imgH = baseBoxH;
+            imgW = imgH * aspect;
+          } else {
+            imgW = baseBoxW;
+            imgH = imgW / aspect;
+          }
+        } else { // contain
+          if (aspect > boxAspect) {
+            imgW = baseBoxW;
+            imgH = imgW / aspect;
+          } else {
+            imgH = baseBoxH;
+            imgW = imgH * aspect;
+          }
+        }
+      }
+      return {
+        clip,
+        kind: "image",
+        ...motion,
+        x,
+        y: y + (clip.motion === "rise" ? (1 - motion.progress) * 75 : 0),
+        rotation: (clip.rotation * Math.PI) / 180,
+        scale: clip.scale,
+        alpha: motion.alpha * clip.opacity,
+        width: imgW,
+        height: imgH,
+        localLeft: -imgW / 2,
+        localTop: -imgH / 2,
       };
     }
     const bottom = clip.place === "bottom",
@@ -138,9 +260,9 @@ export function renderFrame(
   ctx,
   model,
   time,
-  { selected = [], primary = null, handleSize = 20, guides = [] } = {},
+  { selected = [], primary = null, handleSize = 20, guides = [], imageCache = null } = {},
 ) {
-  const items = frameGeometry(ctx, model, time);
+  const items = frameGeometry(ctx, model, time, imageCache);
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   ctx.fillStyle = "#171b18";
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -204,6 +326,34 @@ export function renderFrame(
       item.lines.forEach((line, index) =>
         ctx.fillText(line, 0, index * item.size * 1.02, item.maxWidth),
       );
+    } else if (item.kind === "image") {
+      ctx.translate(item.x, item.y);
+      ctx.rotate(item.rotation);
+      ctx.scale(item.scale, item.scale);
+      // Clip to the intended frame so cover-mode overflow cannot bleed
+      // outside the composition box, and placeholder-to-loaded geometry
+      // stays bounded to the same frame.
+      ctx.beginPath();
+      ctx.rect(-640, -360, 1280, 720);
+      ctx.clip();
+      const img = imageCache?.get(clip.source);
+      if (img) {
+        ctx.drawImage(img, item.localLeft, item.localTop, item.width, item.height);
+      } else {
+        ctx.fillStyle = "#2a2d2a";
+        ctx.fillRect(item.localLeft, item.localTop, item.width, item.height);
+        ctx.strokeStyle = "#4a4d4a";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(item.localLeft, item.localTop, item.width, item.height);
+        ctx.fillStyle = "#8b9691";
+        ctx.font = "40px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          clip.source ? "IMAGE NOT FOUND" : "NO SOURCE",
+          0,
+          10
+        );
+      }
     } else {
       const accent = clip.color;
       ctx.translate(item.x, item.y);
