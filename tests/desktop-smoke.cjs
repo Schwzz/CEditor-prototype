@@ -254,8 +254,9 @@ app
     );
     passed("New Project from Home enters the editor");
     // Editor chrome: full menus (Templates arrives asynchronously with the
-    // dynamic template items), the document title, and the default-open
-    // code panel of the video-first workspace.
+    // dynamic template items) and the document title. The code panel starts
+    // COLLAPSED: the launch state is the video-editing workspace (preview,
+    // inspector, timeline), with code one keystroke or click away.
     let editorMenu = null;
     for (let attempt = 0; attempt < 200; attempt++) {
       editorMenu = menuLabels();
@@ -266,39 +267,61 @@ app
     assert.equal(window.getTitle(), "Orbit study — Framecode");
     assert.equal(
       await page(() => document.querySelector(".workspace").dataset.code),
-      "open",
+      "collapsed",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("codePanelToggle").getAttribute("aria-pressed"),
+      ),
+      "false",
     );
     assert.equal(
       await page(() => document.getElementById("timelineStatus").hidden),
       true,
     );
+    // Video-first geometry: preview and inspector are laid out and the
+    // timeline is visible beneath them, with no code column taking space.
+    const geometry = await page(() => {
+      const rail = document.querySelector(".code-rail").getBoundingClientRect();
+      const preview = document
+        .querySelector(".preview-panel")
+        .getBoundingClientRect();
+      const inspector = document
+        .querySelector(".template-panel")
+        .getBoundingClientRect();
+      const timeline = document
+        .querySelector(".timeline-panel")
+        .getBoundingClientRect();
+      return {
+        railWidth: rail.width,
+        previewWidth: preview.width,
+        previewRightOfRail: preview.left >= rail.right - 1,
+        inspectorWidth: inspector.width,
+        inspectorAtRightEdge:
+          Math.abs(inspector.right - innerWidth) < 2,
+        timelineVisible: timeline.height > 40 && timeline.top >= preview.bottom,
+      };
+    });
+    assert.equal(geometry.railWidth <= 44, true);
+    assert.ok(geometry.previewWidth > 300, "preview is prominent");
+    assert.ok(geometry.previewRightOfRail, "preview sits beside the rail");
+    assert.ok(geometry.inspectorWidth > 180, "inspector keeps its column");
+    assert.ok(geometry.inspectorAtRightEdge, "inspector anchors the right edge");
+    assert.ok(geometry.timelineVisible, "timeline stays visible below");
     passed(
-      "editor stage shows full menus, document title, and a quiet status bar",
+      "editor stage shows full menus, document title, and the collapsed code workspace",
     );
-    // The View-menu checkbox mirrors panel state: toggle through the command
-    // path a Ctrl+E / menu click takes, and it rebuilds and stays in sync.
+    // Opening the panel through the View-menu command path a menu click or
+    // Ctrl+E takes: the workspace expands, the checkbox rebuilds in sync,
+    // and the editor becomes visible and measurable.
     const codePanelChecked = () =>
       Menu.getApplicationMenu().getMenuItemById("codePanel").checked;
     await cmd("codePanel");
     assert.equal(
       await page(() => document.querySelector(".workspace").dataset.code),
-      "collapsed",
-    );
-    let checkboxSync = false;
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (codePanelChecked() === false) {
-        checkboxSync = true;
-        break;
-      }
-      await sleep(50);
-    }
-    assert.ok(checkboxSync, "View checkbox follows the collapsed panel");
-    await cmd("codePanel");
-    assert.equal(
-      await page(() => document.querySelector(".workspace").dataset.code),
       "open",
     );
-    checkboxSync = false;
+    let checkboxSync = false;
     for (let attempt = 0; attempt < 100; attempt++) {
       if (codePanelChecked() === true) {
         checkboxSync = true;
@@ -306,8 +329,41 @@ app
       }
       await sleep(50);
     }
-    assert.ok(checkboxSync, "View checkbox follows the reopened panel");
-    passed("code panel toggling keeps the workspace and View menu in sync");
+    assert.ok(checkboxSync, "View checkbox follows the opened panel");
+    assert.ok(
+      await page(
+        () =>
+          document.querySelector(".cm-content").getBoundingClientRect().width >
+            100 &&
+          document.querySelector(".cm-content").innerText.length > 0,
+      ),
+      "code editor is visible and populated once opened",
+    );
+    // Ctrl+E through the renderer shortcut path toggles the panel back
+    // closed, and the View checkbox follows.
+    await key("e", ["control"]);
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "collapsed",
+    );
+    checkboxSync = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (codePanelChecked() === false) {
+        checkboxSync = true;
+        break;
+      }
+      await sleep(50);
+    }
+    assert.ok(checkboxSync, "View checkbox follows the Ctrl+E collapse");
+    // Leave the panel open for the editing flows that follow.
+    await cmd("codePanel");
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "open",
+    );
+    passed(
+      "code panel starts collapsed and opens/closes with the View menu in sync",
+    );
     const original = await source();
     await require("./editing-desktop.cjs")({
       page,

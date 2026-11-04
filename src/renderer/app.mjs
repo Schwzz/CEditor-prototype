@@ -988,6 +988,7 @@ document.addEventListener("keydown", (event) => {
       c: "copy",
       v: "paste",
       d: "duplicate",
+      e: "codePanel",
     };
     if (keys[event.key.toLowerCase()]) {
       event.preventDefault();
