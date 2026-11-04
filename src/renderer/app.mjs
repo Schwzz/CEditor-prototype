@@ -839,8 +839,15 @@ window.addEventListener("resize", () => {
 async function command(name) {
   if (fileBusy || booting) return;
   try {
-    if (["new", "open", "save", "saveAs", "close"].includes(name))
-      return await fileCommand(name);
+    if (["new", "open", "save", "saveAs", "close"].includes(name)) {
+      const done = await fileCommand(name);
+      // The native File menu is available on the Home screen too; a
+      // successful New/Open there must enter the editor just like the
+      // Home actions do.
+      if (done && (name === "new" || name === "open") && onHome())
+        enterEditor();
+      return done;
+    }
     if (name === "guide") {
       openModal("guideDialog");
       return;

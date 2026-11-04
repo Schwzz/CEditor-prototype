@@ -198,11 +198,12 @@ app
       "launch lands on the Home screen without creating a placeholder draft",
     );
     // Honest recent-projects empty state: persistence does not exist yet, so
-    // no fake entries may be shown.
-    assert.match(
-      await page(() => document.getElementById("homeRecentsEmpty").textContent),
-      /No recent projects yet/,
+    // no fake entries and no promise that tracking will appear.
+    const recentsText = await page(() =>
+      document.getElementById("homeRecentsEmpty").textContent,
     );
+    assert.match(recentsText, /Recents aren't tracked in this build\./);
+    assert.doesNotMatch(recentsText, /will (show up|appear)/);
     passed("Home shows an honest empty recent-projects state");
     // A cancelled Open from Home must stay on Home.
     opening = null;
@@ -213,8 +214,11 @@ app
     );
     assert.equal(await page(() => document.body.dataset.stage), "home");
     passed("cancelled Open from Home keeps the Home screen");
-    // New Project from Home is the explicit way into the editor.
-    await click("homeNewProject");
+    // New Project from Home is the explicit way into the editor. The native
+    // menu forwards "new" over desktop:command — the same path a Ctrl+N
+    // accelerator click takes — and it must enter the editor from Home
+    // exactly like the Home buttons.
+    window.webContents.send("desktop:command", "new");
     await wait(
       () =>
         document.body.dataset.stage === "editor" &&
