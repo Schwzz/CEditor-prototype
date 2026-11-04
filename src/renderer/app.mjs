@@ -38,7 +38,6 @@ function enterEditor() {
   // The native chrome (title, menus) follows the stage.
   desktop.setStage("editor").catch(() => {});
 }
-desktop.setStage("home").catch(() => {});
 imageCache.subscribe(() => {
   if (!playing) scheduleRender();
 });
@@ -1079,4 +1078,9 @@ async function boot() {
   document.body.dataset.ready = "true";
 }
 render();
+// Report the stage only now that the renderer module is fully wired: the
+// native window title is applied from this report, so an externally
+// visible "Framecode" title doubles as proof that the packaged renderer
+// actually booted.
+desktop.setStage(document.body.dataset.stage).catch(() => {});
 void boot();

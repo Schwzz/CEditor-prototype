@@ -182,7 +182,11 @@ async function createDesktopWindow({
     minWidth: 1080,
     minHeight: 740,
     show: false,
-    title: "Framecode",
+    // No static title here: the window title is renderer-attested. The
+    // renderer reports its stage once its module is fully wired, and only
+    // then does applyTitle() run — so a visible "Framecode" /
+    // "name — Framecode" title proves the packaged renderer actually
+    // booted, which the packaged-launch verification relies on.
     backgroundColor: "#141617",
     icon: path.join(__dirname, "../assets/icon.png"),
     webPreferences: {
@@ -225,7 +229,6 @@ async function createDesktopWindow({
         (name ? name + " — Framecode" : "Framecode"),
     );
   }
-  applyTitle();
 
   async function scanForAssets(source) {
     if (typeof source !== "string" || !source.trim()) return;
