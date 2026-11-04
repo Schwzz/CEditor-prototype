@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 module.exports = async function ({
   page,
   click,
+  cmd,
   field,
   replaceCode,
   source,
@@ -55,7 +56,7 @@ module.exports = async function ({
   const starts = [...changed.matchAll(/\.at\(([\d.]+)\)/g)].map((m) => +m[1]);
   assert.ok(starts[0] > 1);
   assert.ok(Math.abs(starts[0] - 1 - (starts[1] - 5)) < 0.001);
-  await click("undo");
+  await cmd("undo");
   assert.equal(await source(), score);
   passed(
     "timeline zoom, 30fps stepping, multi-selection and one-step group movement",
@@ -77,7 +78,7 @@ module.exports = async function ({
     (await page(() => +document.getElementById("clipDuration").value)) > 2,
     "resizing a scrolled clip changes its duration",
   );
-  await click("undo");
+  await cmd("undo");
   assert.equal(await source(), score);
   await field("timelineZoom", 1, "input");
   passed(
@@ -167,7 +168,7 @@ module.exports = async function ({
     scale > 1.1 && scale < 1.5,
     "corner drag changes scale: " + JSON.stringify({ scale, geometry }),
   );
-  await click("undo");
+  await cmd("undo");
   assert.equal(await source(), shape);
   const top = -375 - 3 * Math.max(12, (6 * 1920) / geometry.w),
     margin = Math.max(12, (6 * 1920) / geometry.w),
@@ -185,7 +186,7 @@ module.exports = async function ({
     () => +document.getElementById("objectRotation").value,
   );
   assert.ok(rotation > 25 && rotation < 65, "rotation handle changes angle");
-  await click("undo");
+  await cmd("undo");
   assert.equal(await source(), shape);
   passed("preview corner and rotation handle pointer gestures each undo once");
   const newer = shape.replace("Handles", "New source during gesture");

@@ -1,4 +1,4 @@
-const { app, clipboard, net } = require("electron");
+const { app, clipboard, net, Menu } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
@@ -70,13 +70,28 @@ async function select(id) {
   );
   await sleep(60);
 }
+// Toolbar buttons were removed; file/app commands arrive through the native
+// menu, which forwards them as "desktop:command" sends. Simulate exactly
+// that path here.
+async function cmd(name) {
+  window.webContents.send("desktop:command", name);
+  await sleep(80);
+}
+// The header buttons are gone; the composition source opens through the
+// native File menu ("Composition source…" → "desktop:command" "source"),
+// which fills #shareCode with the live source.
 async function source() {
-  return page(() => {
-    document.getElementById("openShare").click();
-    const value = document.getElementById("shareCode").value;
-    document.getElementById("shareDialog").close();
-    return value;
+  await cmd("source");
+  const value = await page(() => {
+    const dialog = document.getElementById("shareDialog");
+    if (!dialog.open) throw new Error("source dialog did not open");
+    return document.getElementById("shareCode").value;
   });
+  await page(() => {
+    const dialog = document.getElementById("shareDialog");
+    if (dialog.open) dialog.close();
+  });
+  return value;
 }
 async function key(keyCode, modifiers = []) {
   window.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
@@ -154,7 +169,7 @@ app
       dialogs,
       show: true,
     }));
-    installMenu(window);
+    await installMenu(window, "home");
     window.webContents.on("console-message", (event) => {
       if (event.level === "error") rendererErrors.push(event.message);
     });
@@ -179,10 +194,181 @@ app
       "desktop timeline remains visible without page scrolling",
     );
     passed("local sandboxed desktop shell and restricted preload");
+    // Phase 2.1: the app launches into the Home screen and must not create
+    // or load a placeholder project (no dirty state, no recovery write).
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    assert.equal(
+      await page(() => document.getElementById("homeScreen").hidden),
+      false,
+    );
+    assert.equal(
+      await page(() => window.framecodeDesktop.readRecovery()),
+      null,
+    );
+    assert.equal(
+      await page(() => document.getElementById("dirtyBadge").hidden),
+      true,
+    );
+    passed(
+      "launch lands on the Home screen without creating a placeholder draft",
+    );
+    // Stage-aware chrome: until the renderer reports the editor stage the
+    // window is branded and offers only file-level menus.
+    const menuLabels = () => Menu.getApplicationMenu().items.map((item) => item.label);
+    let homeMenu = null;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      homeMenu = menuLabels();
+      if (homeMenu.length === 1 && homeMenu[0] === "File") break;
+      await sleep(50);
+    }
+    assert.deepEqual(homeMenu, ["File"]);
+    assert.equal(window.getTitle(), "Framecode");
+    passed("Home shows the brand title and only file-level menus");
+    // Honest recent-projects empty state: persistence does not exist yet, so
+    // no fake entries and no promise that tracking will appear.
+    const recentsText = await page(() =>
+      document.getElementById("homeRecentsEmpty").textContent,
+    );
+    assert.match(recentsText, /Recents aren't tracked in this build\./);
+    assert.doesNotMatch(recentsText, /will (show up|appear)/);
+    passed("Home shows an honest empty recent-projects state");
+    // A cancelled Open from Home must stay on Home.
+    opening = null;
+    await click("homeOpenProject");
+    await wait(
+      () => !document.getElementById("homeOpenProject").disabled,
+      "home idle after cancelled open",
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    passed("cancelled Open from Home keeps the Home screen");
+    // New Project from Home is the explicit way into the editor. The native
+    // menu forwards "new" over desktop:command — the same path a Ctrl+N
+    // accelerator click takes — and it must enter the editor from Home
+    // exactly like the Home buttons.
+    window.webContents.send("desktop:command", "new");
+    await wait(
+      () =>
+        document.body.dataset.stage === "editor" &&
+        document.getElementById("homeScreen").hidden,
+      "entered editor from Home",
+    );
+    passed("New Project from Home enters the editor");
+    // Editor chrome: full menus (Templates arrives asynchronously with the
+    // dynamic template items) and the document title. The code panel starts
+    // COLLAPSED: the launch state is the video-editing workspace (preview,
+    // inspector, timeline), with code one keystroke or click away.
+    let editorMenu = null;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      editorMenu = menuLabels();
+      if (editorMenu.includes("Templates")) break;
+      await sleep(50);
+    }
+    assert.deepEqual(editorMenu, ["File", "Edit", "View", "Templates", "Help"]);
+    assert.equal(window.getTitle(), "Orbit study — Framecode");
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "collapsed",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("codePanelToggle").getAttribute("aria-pressed"),
+      ),
+      "false",
+    );
+    assert.equal(
+      await page(() => document.getElementById("timelineStatus").hidden),
+      true,
+    );
+    // Video-first geometry: preview and inspector are laid out and the
+    // timeline is visible beneath them, with no code column taking space.
+    const geometry = await page(() => {
+      const rail = document.querySelector(".code-rail").getBoundingClientRect();
+      const preview = document
+        .querySelector(".preview-panel")
+        .getBoundingClientRect();
+      const inspector = document
+        .querySelector(".template-panel")
+        .getBoundingClientRect();
+      const timeline = document
+        .querySelector(".timeline-panel")
+        .getBoundingClientRect();
+      return {
+        railWidth: rail.width,
+        previewWidth: preview.width,
+        previewRightOfRail: preview.left >= rail.right - 1,
+        inspectorWidth: inspector.width,
+        inspectorAtRightEdge:
+          Math.abs(inspector.right - innerWidth) < 2,
+        timelineVisible: timeline.height > 40 && timeline.top >= preview.bottom,
+      };
+    });
+    assert.equal(geometry.railWidth <= 44, true);
+    assert.ok(geometry.previewWidth > 300, "preview is prominent");
+    assert.ok(geometry.previewRightOfRail, "preview sits beside the rail");
+    assert.ok(geometry.inspectorWidth > 180, "inspector keeps its column");
+    assert.ok(geometry.inspectorAtRightEdge, "inspector anchors the right edge");
+    assert.ok(geometry.timelineVisible, "timeline stays visible below");
+    passed(
+      "editor stage shows full menus, document title, and the collapsed code workspace",
+    );
+    // Opening the panel through the View-menu command path a menu click or
+    // Ctrl+E takes: the workspace expands, the checkbox rebuilds in sync,
+    // and the editor becomes visible and measurable.
+    const codePanelChecked = () =>
+      Menu.getApplicationMenu().getMenuItemById("codePanel").checked;
+    await cmd("codePanel");
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "open",
+    );
+    let checkboxSync = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (codePanelChecked() === true) {
+        checkboxSync = true;
+        break;
+      }
+      await sleep(50);
+    }
+    assert.ok(checkboxSync, "View checkbox follows the opened panel");
+    assert.ok(
+      await page(
+        () =>
+          document.querySelector(".cm-content").getBoundingClientRect().width >
+            100 &&
+          document.querySelector(".cm-content").innerText.length > 0,
+      ),
+      "code editor is visible and populated once opened",
+    );
+    // Ctrl+E through the renderer shortcut path toggles the panel back
+    // closed, and the View checkbox follows.
+    await key("e", ["control"]);
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "collapsed",
+    );
+    checkboxSync = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (codePanelChecked() === false) {
+        checkboxSync = true;
+        break;
+      }
+      await sleep(50);
+    }
+    assert.ok(checkboxSync, "View checkbox follows the Ctrl+E collapse");
+    // Leave the panel open for the editing flows that follow.
+    await cmd("codePanel");
+    assert.equal(
+      await page(() => document.querySelector(".workspace").dataset.code),
+      "open",
+    );
+    passed(
+      "code panel starts collapsed and opens/closes with the View menu in sync",
+    );
     const original = await source();
     await require("./editing-desktop.cjs")({
       page,
       click,
+      cmd,
       field,
       replaceCode,
       source,
@@ -224,7 +410,7 @@ app
     });
     await drag(clip, { x: clip.x + 30, y: clip.y });
     assert.notEqual(await source(), beforeDrag);
-    await click("undo");
+    await cmd("undo");
     assert.equal(await source(), beforeDrag);
     passed("timeline dragging commits one undo step");
     await page(() =>
@@ -243,9 +429,9 @@ app
       await page(() => document.getElementById("selectedName").textContent),
       "Signal",
     );
-    await click("undo");
+    await cmd("undo");
     assert.doesNotMatch(await source(), /\.position\(/);
-    await click("redo");
+    await cmd("redo");
     assert.match(await source(), /\.position\(/);
     passed("preview hit selection, movement, and shared undo/redo");
     await select("Headline");
@@ -276,8 +462,15 @@ app
     assert.match(await source(), /\.sourceAt\(/);
     passed("context-menu split with continuous animation source window");
     window.webContents.send("desktop:command", "copy");
-    await sleep(100);
-    assert.match(await clipboard.readText(), /framecode-clip/);
+    // The native clipboard write completes asynchronously, so poll instead
+    // of trusting a fixed delay.
+    const copyLimit = Date.now() + 4000;
+    let copied = "";
+    while (Date.now() < copyLimit && !/framecode-clip/.test(copied)) {
+      copied = await clipboard.readText();
+      await sleep(60);
+    }
+    assert.match(copied, /framecode-clip/);
     window.webContents.send("desktop:command", "paste");
     await sleep(100);
     assert.equal(
@@ -294,7 +487,7 @@ app
     );
     await fs.writeFile(testImgPath, pngBuffer);
     opening = testImgPath;
-    await click("importImage");
+    await cmd("importImage");
     assert.match(await source(), /image\("test"\)/);
     passed("image import and code insertion");
 
@@ -352,7 +545,7 @@ app
       "unauthorized directly-referenced image does not render",
     );
     opening = retryImgPath;
-    await click("importImage");
+    await cmd("importImage");
     assert.match(await source(), /image\("retry_1"\)/);
     await wait(
       () => {
@@ -408,17 +601,16 @@ app
     const oversizedPath = path.join(dataDirectory, "oversized.png");
     await fs.writeFile(oversizedPath, Buffer.alloc(50 * 1024 * 1024 + 1));
     opening = oversizedPath;
-    await click("importImage");
+    await cmd("importImage");
     await sleep(150);
     assert.doesNotMatch(await source(), /image\("oversized"\)/);
     passed("oversized image is rejected at import");
     unsaved = 1;
-    await click("newProject");
+    await cmd("new");
     await wait(
       () =>
         document.getElementById("fileName").textContent ===
-        "Untitled.framecode.json" &&
-        document.getElementById("undo").disabled,
+        "Untitled.framecode.json" && !document.getElementById("reset").disabled,
       "new project clears authorization",
     );
     const clearedAuthRes = await net.fetch(assetUrl(testImgPath));
@@ -456,6 +648,14 @@ app
       403,
     );
     passed("cross-window access to another window's asset is rejected");
+    // window2 boots into the Home screen as well; enter its editor the same
+    // way a user would (New Project) before exercising its import flow.
+    await window2.webContents.executeJavaScript(
+      'document.getElementById("homeNewProject").click()',
+    );
+    await window2.webContents.executeJavaScript(
+      "(async () => { for (let i = 0; i < 100 && document.body.dataset.stage !== 'editor'; i++) await new Promise(r => setTimeout(r, 50)); })()",
+    );
     // window2 imports its own asset.
     const secondImgPath = path.join(secondData, "second.png");
     await fs.writeFile(secondImgPath, pngBuffer);
@@ -463,9 +663,7 @@ app
       canceled: false,
       filePaths: [secondImgPath],
     });
-    await window2.webContents.executeJavaScript(
-      'document.getElementById("importImage").click()',
-    );
+    window2.webContents.send("desktop:command", "importImage");
     for (
       let attempt = 0;
       attempt < 100 &&
@@ -511,12 +709,12 @@ app
     passed("closing one window leaves the other window's IPC intact");
     await fs.rm(secondData, { recursive: true, force: true });
     opening = testImgPath;
-    await click("importImage");
+    await cmd("importImage");
     assert.match(await source(), /image\("test"\)/);
     await field("param-title", "DESKTOP TEST", "input");
     assert.match(await source(), /DESKTOP TEST/);
     saving = null;
-    await click("saveAsProject");
+    await cmd("saveAs");
     assert.equal(
       await page(() => document.getElementById("dirtyBadge").hidden),
       false,
@@ -533,7 +731,7 @@ app
     unsaved = 2;
     passed("Close Save followed by a cancelled picker retains the draft");
     saving = path.join(dataDirectory, "Saved.framecode.json");
-    await click("saveProject");
+    await cmd("save");
     await wait(
       () => document.getElementById("dirtyBadge").hidden,
       "saved state",
@@ -550,7 +748,7 @@ app
       JSON.stringify({ ...saved, source: otherSource, lastValid: otherSource }),
     );
     opening = otherPath;
-    await click("openProject");
+    await cmd("open");
     await wait(
       () =>
         document.getElementById("fileName").textContent ===
@@ -558,12 +756,11 @@ app
       "opened project identity",
     );
     assert.match(await source(), /OPENED PROJECT/);
-    assert.equal(
-      await page(() => document.getElementById("undo").disabled),
-      true,
-    );
+    // Fresh history: an immediately-issued Undo must be a no-op.
+    await cmd("undo");
+    assert.equal(await source(), otherSource);
     opening = originalPath;
-    await click("openProject");
+    await cmd("open");
     await wait(
       () =>
         document.getElementById("fileName").textContent ===
@@ -573,14 +770,14 @@ app
     assert.equal(await source(), saved.source);
     passed("Open loads real project content, file identity, and fresh history");
     await wait(
-      () => !document.getElementById("openProject").disabled,
+      () => !document.getElementById("reset").disabled,
       "open idle before cleanup failure",
     );
     await fs.mkdir(path.join(dataDirectory, "recovery.json"));
     opening = otherPath;
-    await click("openProject");
+    await cmd("open");
     await wait(
-      () => !document.getElementById("openProject").disabled,
+      () => !document.getElementById("reset").disabled,
       "open after recovery cleanup failure",
     );
     assert.equal(
@@ -592,18 +789,18 @@ app
       await page(() => document.getElementById("fileName").textContent),
       "Other.framecode.json",
     );
-    await click("saveProject");
+    await cmd("save");
     await wait(
-      () => !document.getElementById("saveProject").disabled,
+      () => !document.getElementById("reset").disabled,
       "save after cleanup failure",
     );
     assert.equal(
       JSON.parse(await fs.readFile(otherPath, "utf8")).source,
       otherSource,
     );
-    await click("newProject");
+    await cmd("new");
     await wait(
-      () => !document.getElementById("newProject").disabled,
+      () => !document.getElementById("reset").disabled,
       "new after cleanup failure",
     );
     assert.equal(await source(), original);
@@ -616,7 +813,7 @@ app
       force: true,
     });
     opening = originalPath;
-    await click("openProject");
+    await cmd("open");
     await wait(
       () =>
         document.getElementById("fileName").textContent ===
@@ -631,9 +828,14 @@ app
       () => !document.getElementById("error").hidden,
       "invalid source",
     );
+    // The source surface is not reachable while the composition is invalid,
+    // matching the disabled header button from before the menu rework.
+    await cmd("source");
     assert.equal(
-      await page(() => document.getElementById("openShare").disabled),
-      true,
+      await page(
+        () => document.getElementById("shareDialog").open,
+      ),
+      false,
     );
     await wait(async () => {
       const snapshot = await window.framecodeDesktop.readRecovery();
@@ -645,7 +847,7 @@ app
     passed(
       "invalid source and last-valid preview survive recovery persistence",
     );
-    await click("saveProject");
+    await cmd("save");
     await wait(
       () => document.getElementById("dirtyBadge").hidden,
       "save invalid draft",
@@ -654,15 +856,15 @@ app
     assert.match(invalid.source, /unknownFunction/);
     assert.equal(invalid.lastValid, saved.source);
     passed("invalid drafts can be saved without losing last-valid source");
-    await click("undo");
+    await cmd("undo");
     await wait(
       () => document.getElementById("error").hidden,
       "undo repairs invalid code",
     );
     saving = path.join(dataDirectory, "missing", "CannotSave.framecode.json");
-    await click("saveAsProject");
+    await cmd("saveAs");
     await wait(
-      () => !document.getElementById("saveAsProject").disabled,
+      () => !document.getElementById("reset").disabled,
       "failed save returns to idle",
     );
     assert.equal(
@@ -684,13 +886,13 @@ app
     unsaved = 2;
     opening = saving;
     const attempts = openCalls;
-    await click("openProject");
+    await cmd("open");
     assert.equal(openCalls, attempts);
     passed("unsaved Open Cancel keeps document and never opens picker");
     unsaved = 1;
     opening = null;
     const previousSource = await source();
-    await click("openProject");
+    await cmd("open");
     assert.equal(await source(), previousSource);
     passed("cancelled Open leaves the composition intact");
 
@@ -723,6 +925,14 @@ app
     assert.equal((await net.fetch(assetUrl(relinkImgPath))).status, 403);
     passed("declining the relink consent dialog leaves images unauthorized");
     relinkConsent = 0;
+    // The renderer's own recovery autosave can rewrite the file pending write;
+    // reseed so the consent scenario always starts from the relink fixture.
+    await relinkRecovery.write({
+      format: "framecode-project",
+      version: 1,
+      source: relinkSource,
+      lastValid: relinkSource,
+    });
     const granted = await page(() =>
       window.framecodeDesktop.relinkRecoveryAssets(),
     );
@@ -745,7 +955,7 @@ app
     assert.ok(relinkedImage, "consented relinked image loads in the renderer");
     passed("explicit relink consent authorizes and displays recovered images");
 
-    await click("newProject");
+    await cmd("new");
     await wait(
       () =>
         document.getElementById("fileName").textContent ===
@@ -753,19 +963,18 @@ app
       "new project",
     );
     assert.equal(await source(), original);
-    assert.equal(
-      await page(() => document.getElementById("undo").disabled),
-      true,
-    );
+    // Fresh history again: Undo on a brand-new document changes nothing.
+    await cmd("undo");
+    assert.equal(await source(), original);
     passed("New project resets file identity and cross-project history");
-    await click("openGuide");
+    await cmd("guide");
     assert.equal(
       await page(() => document.querySelectorAll("#guideTopics button").length),
       9,
     );
     await click("loadLesson");
     assert.match(await source(), /My first motion/);
-    await click("undo");
+    await cmd("undo");
     assert.equal(await source(), original);
     passed("nine built-in lessons and undoable example loading");
     const long =
@@ -872,7 +1081,7 @@ app
       dialogs,
       show: true,
     }));
-    installMenu(window);
+    await installMenu(window, "home");
     await wait(
       () => document.getElementById("recoveryDialog").open,
       "recovery dialog on relaunch",
@@ -896,7 +1105,7 @@ app
     );
     passed("relaunch restores invalid recovery as a new unsaved project");
     saving = path.join(dataDirectory, "Recovered.framecode.json");
-    await click("saveProject");
+    await cmd("save");
     await wait(
       () => document.getElementById("dirtyBadge").hidden,
       "recovered project saved",
@@ -977,6 +1186,37 @@ app
       "explicit Discard must close even if old recovery cannot be removed",
     );
     passed("Close Discard is not blocked by recovery cleanup failure");
+    // Phase 2.1: Open Project from the Home screen of a fresh launch loads
+    // the chosen file and enters the editor.
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    await installMenu(window, "home");
+    await wait(() => document.body.dataset.ready === "true", "home relaunch ready");
+    const homeOpenPath = path.join(dataDirectory, "HomeFixture.framecode.json");
+    await fs.writeFile(
+      homeOpenPath,
+      JSON.stringify({
+        format: "framecode-project",
+        version: 1,
+        source: original.replace("Orbit study", "Opened from home"),
+        lastValid: original.replace("Orbit study", "Opened from home"),
+      }),
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    opening = homeOpenPath;
+    await click("homeOpenProject");
+    await wait(
+      () =>
+        document.body.dataset.stage === "editor" &&
+        document.getElementById("fileName").textContent ===
+          "HomeFixture.framecode.json",
+      "opened fixture enters editor from Home",
+    );
+    assert.match(await source(), /Opened from home/);
+    passed("Open Project from Home opens a real project file");
     await fs.rm(dataDirectory, { recursive: true, force: true });
     clearTimeout(deadline);
     console.log(`DESKTOP COMPLETE: ${checks} checks passed.`);

@@ -202,6 +202,9 @@ export function createEditor(
   });
   return {
     getSource: () => view.state.doc.toString(),
+    refresh() {
+      view.requestMeasure();
+    },
     setSource(next) {
       if (next === view.state.doc.toString()) return;
       const selection = view.state.selection.main;

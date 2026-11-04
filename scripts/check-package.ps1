@@ -8,7 +8,15 @@ try {
         Start-Sleep -Milliseconds 250
         $process.Refresh()
         if ($process.HasExited) { throw "Packaged Framecode exited with code $($process.ExitCode)." }
-        if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle.EndsWith(' — Framecode')) {
+        # The window title is renderer-attested: the renderer reports its
+        # stage only after its module is fully wired, and only then does the
+        # main process apply a title. The Home screen titles the window
+        # exactly "Framecode"; the editor appends the document name, so its
+        # title ends with " — Framecode". Any other title (including
+        # Electron's pre-boot default) means the renderer never came up.
+        $title = $process.MainWindowTitle
+        if ($process.MainWindowHandle -ne 0 -and
+            ($title -eq 'Framecode' -or $title.EndsWith(' — Framecode'))) {
             $opened = $true
             break
         }

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld(
     newProject: () => invoke("project:new"),
     confirmUnsaved: () => invoke("project:confirm-unsaved"),
     setDirty: (dirty, name) => invoke("project:dirty", dirty, name),
+    setStage: (stage) => invoke("app:stage", stage),
+    setCodePanel: (open) => invoke("app:code", open),
     readRecovery: () => invoke("recovery:read"),
     writeRecovery: (project) => invoke("recovery:write", project),
     clearRecovery: () => invoke("recovery:clear"),

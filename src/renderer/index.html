@@ -63,49 +63,29 @@
       </defs>
     </svg>
     <header class="app-header">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">f</span>
-        <span class="brand-name">framecode</span>
-      </div>
       <div class="breadcrumb">
         <strong id="projectName">Orbit study</strong>
         <span id="dirtyBadge" hidden>Unsaved</span>
       </div>
-      <div class="file-actions" role="group" aria-label="Project file">
-        <button id="newProject" aria-keyshortcuts="Control+N">New</button
-        ><button id="openProject" aria-keyshortcuts="Control+O">Open…</button
-        ><button id="saveProject" aria-keyshortcuts="Control+S">
-          Save <kbd>Ctrl S</kbd></button
-        ><button id="saveAsProject" aria-keyshortcuts="Control+Shift+S">
-          Save As…</button
-        ><span class="toolbar-divider" aria-hidden="true"></span
-        ><button id="undo" aria-keyshortcuts="Control+Z" disabled>Undo</button
-        ><button id="redo" aria-keyshortcuts="Control+Shift+Z" disabled>
-          Redo
-        </button>
-      </div>
-      <div class="header-actions">
-        <button class="button quiet" id="openTemplates">
-          <svg aria-hidden="true"><use href="#i-grid" /></svg>Templates</button
-        ><button class="button quiet" id="openShare">
-          <svg aria-hidden="true"><use href="#i-code" /></svg>Template source</button
-        ><button
-          class="icon-button"
-          id="openGuide"
-          aria-label="Code guide"
-          title="Code guide (F1)"
-          aria-keyshortcuts="F1"
-        >
-          <svg aria-hidden="true"><use href="#i-help" /></svg>
-        </button>
-      </div>
     </header>
     <main>
-      <div class="workspace">
+      <div class="workspace" data-code="collapsed">
+        <div class="code-rail">
+          <button
+            class="rail-button"
+            id="codePanelToggle"
+            aria-pressed="false"
+            aria-label="Toggle code panel"
+            title="Code panel (Ctrl+E)"
+          >
+            <svg aria-hidden="true"><use href="#i-code" /></svg>
+          </button>
+        </div>
         <section
           class="panel source-panel"
           aria-label="Composition code editor"
         >
+          <div class="panel-resizer" id="codeResizer" aria-hidden="true"></div>
           <div class="panel-header">
             <div class="panel-title">
               Composition<span class="file-label">.frame</span>
@@ -322,11 +302,6 @@
           </div>
           <div class="timeline-tools">
             <button
-              id="importImage"
-              title="Import image clip"
-            >
-              Import image…</button
-            ><button
               id="timelineSnap"
               aria-pressed="true"
               title="Snap to frames, clip edges and playhead"
@@ -363,10 +338,35 @@
     <footer class="status-bar">
       <span id="fileName" title="Local project">Untitled.framecode.json</span>
       <span class="status-spacer"></span>
-      <span id="saveStatus" role="status">Ready · local project</span>
+      <span id="timelineStatus" role="status" hidden></span>
       <span class="status-divider" aria-hidden="true"></span>
-      <span id="timelineStatus">Code, preview, and timeline are in sync</span>
+      <span id="saveStatus" role="status">Ready · local project</span>
     </footer>
+    <section id="homeScreen" class="home-screen" aria-label="Home screen">
+      <div class="home-panel">
+        <div class="home-mark">
+          <span class="brand-mark" aria-hidden="true">f</span>
+          <span class="home-appname">framecode</span>
+        </div>
+        <h1 class="home-heading">Project</h1>
+        <div class="home-actions" role="group" aria-label="Project actions">
+          <button id="homeNewProject" class="home-action primary">
+            New Project <kbd class="home-key" aria-hidden="true">Ctrl N</kbd>
+          </button
+          ><button id="homeOpenProject" class="home-action">
+            Open Project…
+            <kbd class="home-key" aria-hidden="true">Ctrl O</kbd>
+          </button>
+        </div>
+        <h2 class="home-heading recent">Recent Projects</h2>
+        <p id="homeRecentsEmpty" class="home-empty">
+          Recents aren't tracked in this build.
+        </p>
+      </div>
+      <p class="home-foot" aria-hidden="true">
+        Local project · .framecode.json
+      </p>
+    </section>
     <dialog id="templatesDialog" class="modal wide">
       <div class="modal-heading">
         <div>
