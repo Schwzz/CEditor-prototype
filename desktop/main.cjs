@@ -194,6 +194,9 @@ async function createDesktopWindow({
       webviewTag: false,
     },
   });
+  // The document's <title> element must not overwrite the stage-aware
+  // window title that applyTitle() maintains.
+  window.on("page-title-updated", (event) => event.preventDefault());
   const assetToken = crypto.randomBytes(24).toString("hex");
   windowTokenMap.set(assetToken, window);
   // Principal webContents captured at creation; used as the registry key for
@@ -206,6 +209,23 @@ async function createDesktopWindow({
   window.__allowClose = false;
   window.__closing = false;
   window.__busy = false;
+  // Stage chrome state: "home" until the renderer enters the editor; the
+  // title bar and native menus follow both.
+  window.__stage = "home";
+  window.__docName = "";
+  window.__codePanel = false;
+  function applyTitle() {
+    if (window.__stage === "home") {
+      window.setTitle("Framecode");
+      return;
+    }
+    const name = (window.__docName || "").slice(0, 100);
+    window.setTitle(
+      (window.__dirty ? "\u25cf " : "") +
+        (name ? name + " — Framecode" : "Framecode"),
+    );
+  }
+  applyTitle();
 
   async function scanForAssets(source) {
     if (typeof source !== "string" || !source.trim()) return;
@@ -313,8 +333,24 @@ async function createDesktopWindow({
     )
       throw new Error("Invalid document state.");
     window.__dirty = value;
-    window.setTitle((value ? "\u25cf " : "") + name.slice(0, 100) + " — Framecode");
-    window.setDocumentEdited(value);
+    window.__docName = name;
+    applyTitle();
+    window.setDocumentEdited(value && window.__stage === "editor");
+  });
+  // The renderer owns its stage (Home vs editor) and code-panel state; the
+  // menu chrome mirrors both so the native UI always matches the screen.
+  handle("app:stage", (stage) => {
+    if (stage !== "home" && stage !== "editor")
+      throw new Error("Invalid stage.");
+    window.__stage = stage;
+    applyTitle();
+    void installMenu(window, stage).catch(() => {});
+  });
+  handle("app:code", (open) => {
+    if (typeof open !== "boolean") throw new Error("Invalid panel state.");
+    window.__codePanel = open;
+    if (window.__stage === "editor")
+      void installMenu(window, "editor").catch(() => {});
   });
   handle("project:confirm-unsaved", async () => {
     const result = await dialogs.showMessageBox(window, {
@@ -445,9 +481,38 @@ async function createDesktopWindow({
   }) };
 }
 
-function installMenu(window) {
+// Stage-aware application menus. The Home screen only offers what applies
+// there (New/Open/Exit); the editor adds document commands, Edit, View with
+// the code-panel toggle, the native Templates menu, and Help.
+async function installMenu(window, stage = "editor") {
   const command = (name) => () =>
     window.webContents.send("desktop:command", name);
+  const homeFile = [
+    {
+      label: "New project",
+      accelerator: "CmdOrCtrl+N",
+      click: command("new"),
+    },
+    {
+      label: "Open\u2026",
+      accelerator: "CmdOrCtrl+O",
+      click: command("open"),
+    },
+    { type: "separator" },
+    { label: "Exit", click: () => window.close() },
+  ];
+  if (stage === "home") {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([{ label: "File", submenu: homeFile }]),
+    );
+    return;
+  }
+  const { TEMPLATES } = await import("../src/core/engine.mjs");
+  const templateItems = TEMPLATES.map((template) => ({
+    label: template.name,
+    click: command("template:" + template.name),
+  }));
+  const codePanel = !!window.__codePanel;
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
@@ -468,6 +533,18 @@ function installMenu(window) {
             label: "Save As\u2026",
             accelerator: "CmdOrCtrl+Shift+S",
             click: command("saveAs"),
+          },
+          // Temporary home for image import until the media/composition
+          // workflow lands; reachable from the File menu only.
+          {
+            label: "Import image\u2026",
+            accelerator: "CmdOrCtrl+I",
+            click: command("importImage"),
+          },
+          { type: "separator" },
+          {
+            label: "Composition source\u2026",
+            click: command("source"),
           },
           { type: "separator" },
           { label: "Exit", click: () => window.close() },
@@ -496,11 +573,31 @@ function installMenu(window) {
       {
         label: "View",
         submenu: [
+          {
+            id: "codePanel",
+            label: "Code panel",
+            type: "checkbox",
+            checked: codePanel,
+            accelerator: "CmdOrCtrl+E",
+            click: command("codePanel"),
+          },
+          { type: "separator" },
           { role: "resetZoom" },
           { role: "zoomIn" },
           { role: "zoomOut" },
           { type: "separator" },
           { role: "togglefullscreen" },
+        ],
+      },
+      {
+        label: "Templates",
+        submenu: [
+          ...templateItems,
+          { type: "separator" },
+          {
+            label: "Browse templates\u2026",
+            click: command("templates"),
+          },
         ],
       },
       {
@@ -523,7 +620,9 @@ async function start() {
   await app.whenReady();
   installProtocol();
   const { window } = await createDesktopWindow();
-  installMenu(window);
+  // The renderer always boots into Home and reports its stage; menus start
+  // there rather than racing the renderer's app:stage send.
+  installMenu(window, "home");
   app.on("second-instance", () => {
     if (window.isMinimized()) window.restore();
     window.show();

@@ -35,7 +35,10 @@ function onHome() {
 function enterEditor() {
   document.body.dataset.stage = "editor";
   $("homeScreen").hidden = true;
+  // The native chrome (title, menus) follows the stage.
+  desktop.setStage("editor").catch(() => {});
 }
+desktop.setStage("home").catch(() => {});
 imageCache.subscribe(() => {
   if (!playing) scheduleRender();
 });
@@ -229,6 +232,9 @@ function renderParams() {
   if ($("params").dataset.signature !== signature) {
     $("params").dataset.signature = signature;
     $("params").replaceChildren();
+    // The explainer only earns its place when there is nothing to operate.
+    const note = document.querySelector(".param-note");
+    if (note) note.hidden = signature.length > 0;
     for (const [key, value] of Object.entries(store.model.params)) {
       const row = document.createElement("div");
       row.className = "parameter";
@@ -396,28 +402,18 @@ function render(full = true) {
     "error-status",
     !!store.error,
   );
-  $("timelineStatus").textContent = store.error
+  const lastValidNotice = store.error
     ? "Last valid composition · fix the code to edit visually"
-    : "Code, preview, and timeline are in sync";
+    : "";
+  $("timelineStatus").textContent = lastValidNotice;
+  $("timelineStatus").hidden = !lastValidNotice;
   $("previewHint").textContent = store.error
     ? "Preview of the last valid composition"
     : "Drag to move · corners resize · round handle rotates";
-  $("undo").disabled = !store.canUndo || fileBusy;
-  $("redo").disabled = !store.canRedo || fileBusy;
   $("dirtyBadge").hidden = !store.dirty;
   $("fileName").textContent = fileName;
   $("fileName").title = filePath || "New local project";
-  $("openShare").disabled = !!store.error || fileBusy;
-  for (const id of [
-    "newProject",
-    "openProject",
-    "saveProject",
-    "saveAsProject",
-    "reset",
-    "openTemplates",
-    "homeNewProject",
-    "homeOpenProject",
-  ])
+  for (const id of ["reset", "homeNewProject", "homeOpenProject"])
     $(id).disabled = fileBusy || booting;
   const nativeState = JSON.stringify([store.dirty, store.model.name]);
   if (nativeState !== lastNativeState) {
@@ -559,29 +555,28 @@ $("run").onclick = () => {
   if (store.error) toast(store.error.message);
   else toast("Composition is up to date.");
 };
-if ($("importImage")) {
-  $("importImage").onclick = async () => {
-    if (fileBusy || booting) return;
-    let path;
-    try {
-      path = await desktop.importImage();
-    } catch (error) {
-      toast(errorMessage(error));
-      return;
-    }
-    if (!path) return;
-    // Re-importing (re-authorizing) a file must evict any failed cache
-    // entry for it so a previously failed image actually reloads.
-    imageCache.evict(path);
-    const baseName = path.split(/[/\\]/).pop().split(".")[0].replace(/[^\w]/g, "_") || "Image";
-    let name = baseName;
-    let i = 1;
-    while (store.model.clips.some((c) => c.id === name)) {
-      name = `${baseName}_${i++}`;
-    }
-    const nextSource = store.source.trimEnd() + `\nimage(${JSON.stringify(name)}).at(${Math.floor(current)}).for(5).source(${JSON.stringify(path)})`;
-    commit(nextSource, "Import image");
-  };
+async function runImportImage() {
+  if (fileBusy || booting) return;
+  let imported;
+  try {
+    imported = await desktop.importImage();
+  } catch (error) {
+    toast(errorMessage(error));
+    return;
+  }
+  if (!imported) return;
+  // Re-importing (re-authorizing) a file must evict any failed cache
+  // entry for it so a previously failed image actually reloads.
+  imageCache.evict(imported);
+  const baseName =
+    imported.split(/[/\\]/).pop().split(".")[0].replace(/[^\w]/g, "_") || "Image";
+  let name = baseName;
+  let i = 1;
+  while (store.model.clips.some((c) => c.id === name)) {
+    name = `${baseName}_${i++}`;
+  }
+  const nextSource = store.source.trimEnd() + `\nimage(${JSON.stringify(name)}).at(${Math.floor(current)}).for(5).source(${JSON.stringify(imported)})`;
+  commit(nextSource, "Import image");
 }
 $("reset").onclick = () => {
   setPlaying(false);
@@ -589,6 +584,45 @@ $("reset").onclick = () => {
   current = 2;
   imageCache.clearAll();
 };
+// The code panel is a secondary surface: the video-first workspace shows the
+// preview, inspector, and timeline; code opens via the rail, the View menu,
+// or Ctrl+E, and its width is draggable. Markup boots with the panel open,
+// so the live state starts synced to that.
+let codeOpen =
+  document.querySelector(".workspace").getAttribute("data-code") !== "collapsed";
+function setCodePanel(open) {
+  if (codeOpen === open) return;
+  codeOpen = open;
+  document
+    .querySelector(".workspace")
+    .setAttribute("data-code", open ? "open" : "collapsed");
+  const toggle = $("codePanelToggle");
+  toggle.setAttribute("aria-pressed", String(open));
+  desktop.setCodePanel(open).catch(() => {});
+  if (open) editor.refresh();
+}
+$("codePanelToggle").onclick = () => setCodePanel(!codeOpen);
+$("codeResizer").addEventListener("pointerdown", (event) => {
+  if (!codeOpen || event.button !== 0) return;
+  event.preventDefault();
+  const panel = event.currentTarget.parentElement;
+  const startX = event.clientX,
+    startWidth = panel.getBoundingClientRect().width;
+  const move = (e) => {
+    const width = Math.max(280, Math.min(720, startWidth + e.clientX - startX));
+    document
+      .querySelector(".workspace")
+      .style.setProperty("--code-w", width + "px");
+  };
+  const end = () => {
+    removeEventListener("pointermove", move);
+    removeEventListener("pointerup", end);
+    removeEventListener("pointercancel", end);
+  };
+  addEventListener("pointermove", move);
+  addEventListener("pointerup", end);
+  addEventListener("pointercancel", end);
+});
 // Home screen actions reuse the existing project workflows; a successful
 // New/Open is what actually enters the editor.
 async function homeAction(action) {
@@ -603,8 +637,10 @@ for (const button of document.querySelectorAll(".close-dialog"))
 function openModal(id) {
   $(id).showModal();
 }
-$("openGuide").onclick = () => openModal("guideDialog");
-$("openTemplates").onclick = () => openModal("templatesDialog");
+function openSourceDialog() {
+  $("shareCode").value = store.source;
+  $("shareDialog").showModal();
+}
 for (const template of TEMPLATES) {
   const card = document.createElement("button");
   card.className = "gallery-card";
@@ -642,10 +678,6 @@ mountGuide({
     toast("Example loaded. Undo restores the previous source.");
   },
 });
-$("openShare").onclick = () => {
-  $("shareCode").value = store.source;
-  openModal("shareDialog");
-};
 $("copyCode").onclick = async () => {
   try {
     await desktop.writeClipboard($("shareCode").value);
@@ -752,13 +784,6 @@ async function fileCommand(command) {
     return true;
   });
 }
-for (const [id, command] of [
-  ["newProject", "new"],
-  ["openProject", "open"],
-  ["saveProject", "save"],
-  ["saveAsProject", "saveAs"],
-])
-  $(id).onclick = () => fileCommand(command);
 
 function closeContext({ restoreFocus = false } = {}) {
   $("clipMenu").hidden = true;
@@ -848,6 +873,37 @@ async function command(name) {
         enterEditor();
       return done;
     }
+    if (name === "codePanel") {
+      setCodePanel(!codeOpen);
+      return;
+    }
+    if (name === "templates") {
+      openModal("templatesDialog");
+      return;
+    }
+    if (name === "source") {
+      // The removed header button was disabled while the source could not
+      // be shared; the menu command keeps that contract.
+      if (!store.error && !fileBusy) openSourceDialog();
+      return;
+    }
+    if (name === "importImage") {
+      await runImportImage();
+      return;
+    }
+    if (name === "reset") {
+      $("reset").click();
+      return;
+    }
+    if (name.startsWith("template:")) {
+      const template = TEMPLATES.find((t) => t.name === name.slice(9));
+      if (!template) return;
+      setPlaying(false);
+      commit(template.source, "Load template", null);
+      current = 2;
+      toast("Template loaded. Undo restores the previous composition.");
+      return;
+    }
     if (name === "guide") {
       openModal("guideDialog");
       return;
@@ -912,8 +968,6 @@ async function command(name) {
     scheduleRender();
   }
 }
-$("undo").onclick = () => command("undo");
-$("redo").onclick = () => command("redo");
 desktop.onCommand((name) => void command(name));
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
