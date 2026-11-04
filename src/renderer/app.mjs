@@ -26,9 +26,20 @@ const $ = (id) => document.getElementById(id),
 if (!desktop) throw new Error("Launch Framecode from the desktop application.");
 const store = new DocumentStore();
 const imageCache = new ImageCache();
+// Phase 2.1: the app launches into the Home screen; entering the editor is
+// an explicit user action (New/Open/restore).
+document.body.dataset.stage = "home";
+function onHome() {
+  return document.body.dataset.stage === "home";
+}
+function enterEditor() {
+  document.body.dataset.stage = "editor";
+  $("homeScreen").hidden = true;
+}
 imageCache.subscribe(() => {
   if (!playing) scheduleRender();
 });
+
 let current = 2,
   playing = false,
   loop = true,
@@ -404,6 +415,8 @@ function render(full = true) {
     "saveAsProject",
     "reset",
     "openTemplates",
+    "homeNewProject",
+    "homeOpenProject",
   ])
     $(id).disabled = fileBusy || booting;
   const nativeState = JSON.stringify([store.dirty, store.model.name]);
@@ -576,6 +589,15 @@ $("reset").onclick = () => {
   current = 2;
   imageCache.clearAll();
 };
+// Home screen actions reuse the existing project workflows; a successful
+// New/Open is what actually enters the editor.
+async function homeAction(action) {
+  if (await fileCommand(action)) enterEditor();
+}
+if ($("homeNewProject")) {
+  $("homeNewProject").onclick = () => void homeAction("new");
+  $("homeOpenProject").onclick = () => void homeAction("open");
+}
 for (const button of document.querySelectorAll(".close-dialog"))
   button.onclick = () => button.closest("dialog").close();
 function openModal(id) {
@@ -888,6 +910,7 @@ $("redo").onclick = () => command("redo");
 desktop.onCommand((name) => void command(name));
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
+  if (onHome()) return; // editor shortcuts only; native menu accelerators still reach fileCommand
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.key.toLowerCase() === "s") {
     event.preventDefault();
@@ -955,6 +978,7 @@ async function boot() {
           $("recoveryDialog").close();
           $("saveStatus").textContent =
             "Recovered draft · save as a new project";
+          enterEditor();
           resolve();
           // Authorization is granted only by the main process through a
           // native consent dialog; evicting prior failed entries lets

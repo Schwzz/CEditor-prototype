@@ -2452,3 +2452,89 @@ h2 {
     flex-basis: 32px;
   }
 }
+
+/* Home screen */
+body[data-stage="home"] .app-header,
+body[data-stage="home"] main,
+body[data-stage="home"] .status-bar {
+  visibility: hidden;
+}
+.home-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 48px 24px;
+  background:
+    radial-gradient(
+      900px 420px at 78% 12%,
+      rgba(214, 250, 105, 0.06),
+      transparent 65%
+    ),
+    var(--bg);
+}
+.home-screen[hidden] {
+  display: none;
+}
+.home-card {
+  width: min(480px, 100%);
+  padding: 40px 44px 36px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+}
+.home-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+.home-brand .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 13px/1 var(--mono);
+  text-transform: lowercase;
+}
+.home-title {
+  margin: 22px 0 6px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.home-tagline {
+  margin: 0 0 26px;
+  color: var(--text-secondary);
+}
+.home-actions {
+  display: flex;
+  gap: 10px;
+}
+.home-actions .button {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.home-recent {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.home-recent .eyebrow {
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+.home-empty {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}

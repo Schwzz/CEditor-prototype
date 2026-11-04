@@ -179,6 +179,49 @@ app
       "desktop timeline remains visible without page scrolling",
     );
     passed("local sandboxed desktop shell and restricted preload");
+    // Phase 2.1: the app launches into the Home screen and must not create
+    // or load a placeholder project (no dirty state, no recovery write).
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    assert.equal(
+      await page(() => document.getElementById("homeScreen").hidden),
+      false,
+    );
+    assert.equal(
+      await page(() => window.framecodeDesktop.readRecovery()),
+      null,
+    );
+    assert.equal(
+      await page(() => document.getElementById("dirtyBadge").hidden),
+      true,
+    );
+    passed(
+      "launch lands on the Home screen without creating a placeholder draft",
+    );
+    // Honest recent-projects empty state: persistence does not exist yet, so
+    // no fake entries may be shown.
+    assert.match(
+      await page(() => document.getElementById("homeRecentsEmpty").textContent),
+      /No recent projects yet/,
+    );
+    passed("Home shows an honest empty recent-projects state");
+    // A cancelled Open from Home must stay on Home.
+    opening = null;
+    await click("homeOpenProject");
+    await wait(
+      () => !document.getElementById("homeOpenProject").disabled,
+      "home idle after cancelled open",
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    passed("cancelled Open from Home keeps the Home screen");
+    // New Project from Home is the explicit way into the editor.
+    await click("homeNewProject");
+    await wait(
+      () =>
+        document.body.dataset.stage === "editor" &&
+        document.getElementById("homeScreen").hidden,
+      "entered editor from Home",
+    );
+    passed("New Project from Home enters the editor");
     const original = await source();
     await require("./editing-desktop.cjs")({
       page,
@@ -276,8 +319,15 @@ app
     assert.match(await source(), /\.sourceAt\(/);
     passed("context-menu split with continuous animation source window");
     window.webContents.send("desktop:command", "copy");
-    await sleep(100);
-    assert.match(await clipboard.readText(), /framecode-clip/);
+    // The native clipboard write completes asynchronously, so poll instead
+    // of trusting a fixed delay.
+    const copyLimit = Date.now() + 4000;
+    let copied = "";
+    while (Date.now() < copyLimit && !/framecode-clip/.test(copied)) {
+      copied = await clipboard.readText();
+      await sleep(60);
+    }
+    assert.match(copied, /framecode-clip/);
     window.webContents.send("desktop:command", "paste");
     await sleep(100);
     assert.equal(
@@ -456,6 +506,14 @@ app
       403,
     );
     passed("cross-window access to another window's asset is rejected");
+    // window2 boots into the Home screen as well; enter its editor the same
+    // way a user would (New Project) before exercising its import flow.
+    await window2.webContents.executeJavaScript(
+      'document.getElementById("homeNewProject").click()',
+    );
+    await window2.webContents.executeJavaScript(
+      "(async () => { for (let i = 0; i < 100 && document.body.dataset.stage !== 'editor'; i++) await new Promise(r => setTimeout(r, 50)); })()",
+    );
     // window2 imports its own asset.
     const secondImgPath = path.join(secondData, "second.png");
     await fs.writeFile(secondImgPath, pngBuffer);
@@ -977,6 +1035,37 @@ app
       "explicit Discard must close even if old recovery cannot be removed",
     );
     passed("Close Discard is not blocked by recovery cleanup failure");
+    // Phase 2.1: Open Project from the Home screen of a fresh launch loads
+    // the chosen file and enters the editor.
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    installMenu(window);
+    await wait(() => document.body.dataset.ready === "true", "home relaunch ready");
+    const homeOpenPath = path.join(dataDirectory, "HomeFixture.framecode.json");
+    await fs.writeFile(
+      homeOpenPath,
+      JSON.stringify({
+        format: "framecode-project",
+        version: 1,
+        source: original.replace("Orbit study", "Opened from home"),
+        lastValid: original.replace("Orbit study", "Opened from home"),
+      }),
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    opening = homeOpenPath;
+    await click("homeOpenProject");
+    await wait(
+      () =>
+        document.body.dataset.stage === "editor" &&
+        document.getElementById("fileName").textContent ===
+          "HomeFixture.framecode.json",
+      "opened fixture enters editor from Home",
+    );
+    assert.match(await source(), /Opened from home/);
+    passed("Open Project from Home opens a real project file");
     await fs.rm(dataDirectory, { recursive: true, force: true });
     clearTimeout(deadline);
     console.log(`DESKTOP COMPLETE: ${checks} checks passed.`);
