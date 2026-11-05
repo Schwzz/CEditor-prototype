@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld(
       }
     },
     openProject: () => invoke("project:open"),
+    openRecentProject: (recentPath) => invoke("project:open-recent", recentPath),
+    listRecents: () => invoke("recents:list"),
+    removeRecent: (recentPath) => invoke("recents:remove", recentPath),
     saveProject: (project, saveAs = false) =>
       invoke("project:save", project, saveAs),
     newProject: () => invoke("project:new"),

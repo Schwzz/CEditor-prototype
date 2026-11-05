@@ -174,8 +174,10 @@ async function createDesktopWindow({
 } = {}) {
   const { readProject, writeProject, encodeProject, RecoveryFile } =
     await import("./project-files.mjs");
+  const { RecentProjects } = await import("./recents.mjs");
   const { compile } = await import("../src/core/engine.mjs");
   const recovery = new RecoveryFile(dataDirectory);
+  const recents = new RecentProjects(dataDirectory);
   const window = new BrowserWindow({
     width: 1440,
     height: 980,
@@ -272,9 +274,57 @@ async function createDesktopWindow({
       await scanForAssets(project.source);
       await scanForAssets(project.lastValid);
 
+      // Recorded only after the project actually loaded; a recents write
+      // failure must not fail the open itself.
+      await recents
+        .add(choice.filePaths[0], path.basename(choice.filePaths[0]))
+        .catch(() => {});
+
       return {
         name: path.basename(choice.filePaths[0]),
         path: choice.filePaths[0],
+        project,
+      };
+    }),
+  );
+  // Opening a recent project runs the exact same trusted pipeline as the
+  // Open dialog, just with the path supplied by the persisted recents list.
+  handle("project:open-recent", (recentPath) =>
+    exclusive(async () => {
+      if (
+        typeof recentPath !== "string" ||
+        !path.isAbsolute(recentPath) ||
+        recentPath.length > 4096
+      )
+        throw new Error("Invalid recent project.");
+      let project;
+      try {
+        project = await readProject(recentPath);
+      } catch (error) {
+        if (error.code === "ENOENT")
+          throw new Error(
+            "This project is missing: " + recentPath,
+          );
+        if (error.code === "EACCES" || error.code === "EPERM")
+          throw new Error(
+            "This project cannot be accessed: " + recentPath,
+          );
+        throw error;
+      }
+      window.__currentPath = recentPath;
+
+      window.__authorizedAssets.clear();
+      await scanForAssets(project.source);
+      await scanForAssets(project.lastValid);
+
+      // Re-adding moves the project back to the top of Recents.
+      await recents
+        .add(recentPath, path.basename(recentPath))
+        .catch(() => {});
+
+      return {
+        name: path.basename(recentPath),
+        path: recentPath,
         project,
       };
     }),
@@ -317,6 +367,11 @@ async function createDesktopWindow({
       }
       await writeProject(destination, project);
       window.__currentPath = destination;
+      // A successful save is exactly what earns a Recents entry; Save As to
+      // a new path records the new location, Save refreshes the existing one.
+      await recents
+        .add(destination, path.basename(destination))
+        .catch(() => {});
       return {
         name: path.basename(destination),
         path: destination,
@@ -360,12 +415,20 @@ async function createDesktopWindow({
       type: "question",
       title: "Unsaved changes",
       message: "Save your changes before continuing?",
-      buttons: ["Save", "Discard", "Cancel"],
+      buttons: ["Save", "Don't Save", "Cancel"],
       defaultId: 0,
       cancelId: 2,
       noLink: true,
     });
     return ["save", "discard", "cancel"][result.response] || "cancel";
+  });
+  // Recents listing is annotated with missing-file state so Home can mark
+  // entries whose project file no longer exists or is inaccessible.
+  handle("recents:list", () => recents.list());
+  handle("recents:remove", (recentPath) => {
+    if (typeof recentPath !== "string" || recentPath.length > 4096)
+      throw new Error("Invalid recent project.");
+    return recents.remove(recentPath);
   });
   handle("recovery:read", async () => recovery.read());
   handle("recovery:write", (project) => recovery.write(project));
@@ -478,7 +541,7 @@ async function createDesktopWindow({
   });
   if (show) window.once("ready-to-show", () => window.show());
   await window.loadURL(ENTRY + "?token=" + assetToken);
-  return { window, recovery, assetToken, metadata: () => ({
+  return { window, recovery, recents, assetToken, metadata: () => ({
     path: window.__currentPath,
     name: window.__currentPath ? path.basename(window.__currentPath) : "Untitled.framecode.json",
   }) };
