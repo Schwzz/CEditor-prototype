@@ -28,25 +28,42 @@ test("recents round trip: added projects persist across instances (restart)", as
   }
 });
 
-test("recents dedupe by path regardless of case or separators, most recent first", async () => {
+test("recents dedupe by path matches platform path semantics, most recent first", async () => {
   const directory = await dir();
   try {
     const recents = new RecentProjects(directory);
     const lower = join(directory, "Project.framecode.json");
     await recents.add(lower, "Project.framecode.json");
     await recents.add(join(directory, "Other.framecode.json"), "Other.framecode.json");
-    // Windows is case-insensitive and accepts mixed separators; this must
-    // refresh the existing entry, not add a duplicate.
-    const upper = join(directory, "PROJECT.framecode.json");
-    await recents.add(upper, "Project.framecode.json");
-    const list = await recents.list();
-    assert.equal(list.length, 2);
-    assert.equal(list[0].path, upper);
-    assert.equal(
-      list.some((entry) => entry.path === lower),
-      false,
-      "no duplicate entry for the same project",
-    );
+    if (process.platform === "win32") {
+      // Windows paths are case-insensitive and accept mixed separators;
+      // re-adding the same project in another casing must refresh the
+      // existing entry, not add a duplicate.
+      const upper = join(directory, "PROJECT.framecode.json");
+      await recents.add(upper, "Project.framecode.json");
+      const list = await recents.list();
+      assert.equal(list.length, 2);
+      assert.equal(list[0].path, upper);
+      assert.equal(
+        list.some((entry) => entry.path === lower),
+        false,
+        "no duplicate entry for the same project",
+      );
+    } else {
+      // POSIX paths are case-sensitive: a different casing is genuinely a
+      // different file and must be tracked as its own entry, while an
+      // exact re-add still dedupes to the top.
+      const mixed = join(directory, "project.framecode.json");
+      await recents.add(mixed, "Project.framecode.json");
+      await recents.add(lower, "Project.framecode.json");
+      const list = await recents.list();
+      assert.equal(list.length, 3);
+      assert.deepEqual(
+        list.map((entry) => entry.path),
+        [lower, mixed, join(directory, "Other.framecode.json")],
+        "exact re-add dedupes; distinct casings stay distinct",
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
