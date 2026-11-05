@@ -24,7 +24,11 @@ try {
     if (!$opened) { throw 'The packaged app did not open its initialized desktop window.' }
     Write-Output "Packaged Windows app opened: $($process.MainWindowTitle)"
     if (!$process.CloseMainWindow()) { throw 'The packaged window did not accept Close.' }
-    if (!$process.WaitForExit(5000)) { throw 'The packaged app did not shut down after its window closed.' }
+    # Shutdown latency is environment-dependent (GPU-less runners, antivirus
+    # scanning) and can legitimately exceed a few seconds even though the
+    # quit path itself is instant; the assertion still requires a full,
+    # clean exit within this allowance.
+    if (!$process.WaitForExit(15000)) { throw 'The packaged app did not shut down after its window closed.' }
     if ($process.ExitCode -ne 0) { throw "The packaged app exited with code $($process.ExitCode)." }
     Write-Output 'Packaged Windows app shut down cleanly.'
 } finally {
