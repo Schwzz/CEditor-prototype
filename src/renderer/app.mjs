@@ -414,6 +414,10 @@ function render(full = true) {
   $("fileName").title = filePath || "New local project";
   for (const id of ["reset", "homeNewProject", "homeOpenProject"])
     $(id).disabled = fileBusy || booting;
+  for (const button of document.querySelectorAll(
+    ".recent-open, .recent-remove",
+  ))
+    button.disabled = fileBusy || booting;
   const nativeState = JSON.stringify([store.dirty, store.model.name]);
   if (nativeState !== lastNativeState) {
     lastNativeState = nativeState;
@@ -631,6 +635,78 @@ if ($("homeNewProject")) {
   $("homeNewProject").onclick = () => void homeAction("new");
   $("homeOpenProject").onclick = () => void homeAction("open");
 }
+// Recent Projects: the persisted list lives in the main process and only
+// records projects that were actually opened or saved. Home renders it,
+// reopens entries directly, and removes entries — the project file itself
+// is never touched by removal.
+let recentEntries = [];
+async function renderRecents() {
+  const list = $("homeRecents");
+  if (!list) return;
+  try {
+    recentEntries = (await desktop.listRecents()) || [];
+  } catch {
+    // A persistence hiccup must not break Home; keep whatever rendered last.
+    if (recentEntries.length === 0) return;
+  }
+  list.replaceChildren();
+  for (const entry of recentEntries) {
+    const item = document.createElement("li");
+    item.className = "recent-item" + (entry.missing ? " missing" : "");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "recent-open";
+    open.disabled = fileBusy || booting;
+    open.setAttribute(
+      "aria-label",
+      (entry.missing ? "Missing project " : "Open recent project ") +
+        entry.name,
+    );
+    const title = document.createElement("strong");
+    title.textContent = entry.name;
+    const detail = document.createElement("span");
+    detail.className = "recent-path";
+    detail.textContent = entry.path;
+    open.append(title, detail);
+    open.onclick = () => void openRecentProject(entry.path);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "recent-remove";
+    remove.disabled = fileBusy || booting;
+    remove.setAttribute(
+      "aria-label",
+      "Remove " + entry.name + " from recent projects",
+    );
+    remove.title = "Remove from Recents";
+    remove.innerHTML = '<svg><use href="#i-close" /></svg>';
+    remove.onclick = () => void removeRecentEntry(entry.path);
+    item.append(open, remove);
+    list.append(item);
+  }
+  list.hidden = recentEntries.length === 0;
+  const empty = $("homeRecentsEmpty");
+  empty.hidden = recentEntries.length > 0;
+}
+async function openRecentProject(recentPath) {
+  const done = await runFile(async () => {
+    if (!(await guardUnsaved())) return false;
+    const loaded = await desktop.openRecentProject(recentPath);
+    if (!loaded) return false;
+    await adoptLoadedProject(loaded);
+    current = 2;
+    return true;
+  });
+  if (done && onHome()) enterEditor();
+  else if (!done) await renderRecents();
+}
+async function removeRecentEntry(recentPath) {
+  try {
+    await desktop.removeRecent(recentPath);
+  } catch (error) {
+    toast(errorMessage(error));
+  }
+  await renderRecents();
+}
 for (const button of document.querySelectorAll(".close-dialog"))
   button.onclick = () => button.closest("dialog").close();
 function openModal(id) {
@@ -727,6 +803,20 @@ async function guardUnsaved() {
   if (response === "save") return (await saveSnapshot()) && !store.dirty;
   return true;
 }
+// Adopting a project loaded by the main process (Open dialog or Recents):
+// the document is taken in before any fallible cleanup, mirroring the
+// recovery-restore ordering.
+async function adoptLoadedProject(loaded) {
+  cancelAutosave();
+  fileName = loaded.name;
+  filePath = loaded.path;
+  store.load(loaded.project);
+  imageCache.clearAll();
+  const cleared = await clearRecoveryAfterAdoption();
+  $("saveStatus").textContent = cleared
+    ? "Project opened locally"
+    : "Project opened · recovery cleanup failed; autosave paused";
+}
 async function runFile(action) {
   if (fileBusy || booting) return false;
   flushField();
@@ -751,16 +841,7 @@ async function fileCommand(command) {
     if (command === "open") {
       const loaded = await desktop.openProject();
       if (!loaded) return false;
-      cancelAutosave();
-      // The native save path changed: adopt its document before fallible cleanup.
-      fileName = loaded.name;
-      filePath = loaded.path;
-      store.load(loaded.project);
-      imageCache.clearAll();
-      const cleared = await clearRecoveryAfterAdoption();
-      $("saveStatus").textContent = cleared
-        ? "Project opened locally"
-        : "Project opened · recovery cleanup failed; autosave paused";
+      await adoptLoadedProject(loaded);
     } else if (command === "new") {
       cancelAutosave();
       await desktop.newProject();
@@ -1074,10 +1155,14 @@ async function boot() {
   }
   booting = false;
   render();
+  void renderRecents();
   scheduleRecovery();
   document.body.dataset.ready = "true";
 }
 render();
+// Recent Projects render as soon as Home is visible; boot() refreshes the
+// list once the ready state settles.
+void renderRecents();
 // Report the stage only now that the renderer module is fully wired: the
 // native window title is applied from this report, so an externally
 // visible "Framecode" title doubles as proof that the packaged renderer

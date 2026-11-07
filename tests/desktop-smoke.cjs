@@ -1,6 +1,7 @@
 const { app, clipboard, net, Menu } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
+const { stat } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const {
@@ -12,6 +13,7 @@ app.disableHardwareAcceleration();
 app.on("window-all-closed", () => {});
 let window,
   dataDirectory,
+  recents,
   saving = null,
   opening = null,
   unsaved = 2,
@@ -156,7 +158,7 @@ function passed(name) {
 const deadline = setTimeout(() => {
   console.error("Desktop smoke deadline exceeded");
   app.exit(1);
-}, 90000);
+}, 150000);
 app
   .whenReady()
   .then(async () => {
@@ -164,7 +166,7 @@ app
       path.join(os.tmpdir(), "framecode-desktop-"),
     );
     installProtocol();
-    ({ window, assetToken } = await createDesktopWindow({
+    ({ window, recents, assetToken } = await createDesktopWindow({
       dataDirectory,
       dialogs,
       show: true,
@@ -224,13 +226,16 @@ app
     assert.deepEqual(homeMenu, ["File"]);
     assert.equal(window.getTitle(), "Framecode");
     passed("Home shows the brand title and only file-level menus");
-    // Honest recent-projects empty state: persistence does not exist yet, so
-    // no fake entries and no promise that tracking will appear.
+    // Honest recent-projects empty state: a fresh launch has no saved
+    // entries yet, so no fake entries and no promise of tracking will appear.
     const recentsText = await page(() =>
       document.getElementById("homeRecentsEmpty").textContent,
     );
-    assert.match(recentsText, /Recents aren't tracked in this build\./);
-    assert.doesNotMatch(recentsText, /will (show up|appear)/);
+    assert.match(recentsText, /No recent projects yet\./);
+    assert.equal(
+      await page(() => document.getElementById("homeRecents").hidden),
+      true,
+    );
     passed("Home shows an honest empty recent-projects state");
     // A cancelled Open from Home must stay on Home.
     opening = null;
@@ -1217,6 +1222,155 @@ app
     );
     assert.match(await source(), /Opened from home/);
     passed("Open Project from Home opens a real project file");
+    // Phase 2.2: recent projects. The main process records entries only
+    // after a real open or a real disk save, the list persists in the data
+    // directory, and a fresh launch (new window, same data directory)
+    // renders it on Home.
+    const tracked = await recents.list();
+    const trackedNames = tracked.map((entry) => entry.name);
+    assert.equal(trackedNames.includes("HomeFixture.framecode.json"), true);
+    assert.equal(trackedNames.includes("Closed.framecode.json"), true);
+    assert.equal(trackedNames.includes("Saved.framecode.json"), true);
+    assert.deepEqual(
+      tracked.filter((entry) => entry.missing).map((entry) => entry.name),
+      [],
+      "successfully opened and saved projects are not marked missing",
+    );
+    passed("opens and successful saves are tracked in Recents");
+    const recentsUI = () =>
+      page(() =>
+        [...document.querySelectorAll(".recent-item")].map((item) => ({
+          name: item.querySelector(".recent-open strong").textContent,
+          path: item.querySelector(".recent-path").textContent,
+          missing: item.classList.contains("missing"),
+        })),
+      );
+    const clickRecent = (name) =>
+      page((name) => {
+        const button = [...document.querySelectorAll(".recent-open")].find(
+          (button) => button.querySelector("strong").textContent === name,
+        );
+        if (!button) throw new Error("no recent entry: " + name);
+        button.click();
+      }, name);
+    const removeRecent = (name) =>
+      page((name) => {
+        const item = [...document.querySelectorAll(".recent-item")].find(
+          (item) =>
+            item.querySelector(".recent-open strong").textContent === name,
+        );
+        if (!item) throw new Error("no recent entry: " + name);
+        item.querySelector(".recent-remove").click();
+      }, name);
+    // Restart simulation: a brand-new window over the same data directory
+    // boots to Home and shows the persisted Recents with file information.
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    await installMenu(window, "home");
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "recents relaunch ready",
+    );
+    await wait(
+      () => document.querySelectorAll(".recent-item").length > 0,
+      "recents rendered on Home",
+    );
+    const rendered = await recentsUI();
+    assert.equal(rendered.length, tracked.length, "every entry is rendered");
+    assert.equal(rendered[0].name, "HomeFixture.framecode.json");
+    assert.match(rendered[0].path, /HomeFixture\.framecode\.json$/);
+    assert.equal(rendered[0].missing, false);
+    passed("a fresh launch renders persisted Recents with file paths");
+    // Reopening a recent project goes through the same trusted pipeline as
+    // the Open dialog and loads the correct project.
+    await clickRecent("HomeFixture.framecode.json");
+    await wait(
+      () =>
+        document.body.dataset.stage === "editor" &&
+        document.getElementById("fileName").textContent ===
+          "HomeFixture.framecode.json",
+      "recent project reopened",
+    );
+    assert.match(await source(), /Opened from home/);
+    assert.equal((await recents.list())[0].name, "HomeFixture.framecode.json",
+      "reopening moves the project back to the top instead of duplicating it");
+    assert.equal(
+      (await recents.list()).filter((e) => e.name === "HomeFixture.framecode.json").length,
+      1,
+    );
+    passed("selecting a recent project reopens the correct project");
+    // Missing files stay listed but marked, clicking explains the problem
+    // and stays on Home, and removal drops only the entry.
+    await fs.rm(homeOpenPath);
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    await installMenu(window, "home");
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "missing-project relaunch ready",
+    );
+    await wait(
+      () => document.querySelectorAll(".recent-item").length > 0,
+      "recents rendered again",
+    );
+    const missingEntry = (await recentsUI()).find(
+      (entry) => entry.name === "HomeFixture.framecode.json",
+    );
+    assert.equal(missingEntry?.missing, true, "vanished project is marked missing");
+    await clickRecent("HomeFixture.framecode.json");
+    await wait(
+      () => !document.getElementById("toast").hidden,
+      "missing project toast",
+    );
+    assert.match(
+      await page(() => document.getElementById("toastMessage").textContent),
+      /missing/,
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    passed("missing recent projects are marked, explained, and recoverable");
+    const savedPath = path.join(dataDirectory, "Saved.framecode.json");
+    assert.equal((await stat(savedPath)).isFile(), true);
+    await removeRecent("Saved.framecode.json");
+    await wait(
+      () =>
+        ![...document.querySelectorAll(".recent-open strong")].some(
+          (element) => element.textContent === "Saved.framecode.json",
+        ),
+      "entry removed from Home",
+    );
+    assert.equal(
+      (await recentsUI()).some((entry) => entry.name === "Saved.framecode.json"),
+      false,
+    );
+    assert.equal((await stat(savedPath)).isFile(), true,
+      "removing a Recents entry never deletes the project file");
+    passed("removing a Recents entry keeps the project file on disk");
+    // A failed open must not create a misleading Recents entry.
+    const beforeFailedOpen = await recents.list();
+    opening = path.join(dataDirectory, "DoesNotExist.framecode.json");
+    unsaved = 2;
+    await cmd("open");
+    await wait(
+      () =>
+        /ENOENT|no such file/i.test(
+          document.getElementById("toastMessage").textContent,
+        ),
+      "failed open toast",
+    );
+    assert.equal(await page(() => document.body.dataset.stage), "home");
+    const afterFailedOpen = await recents.list();
+    assert.deepEqual(
+      afterFailedOpen.map((entry) => entry.path),
+      beforeFailedOpen.map((entry) => entry.path),
+      "a failed open leaves Recents untouched",
+    );
+    passed("failed opens never create misleading Recents entries");
     await fs.rm(dataDirectory, { recursive: true, force: true });
     clearTimeout(deadline);
     console.log(`DESKTOP COMPLETE: ${checks} checks passed.`);
