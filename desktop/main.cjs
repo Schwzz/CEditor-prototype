@@ -166,6 +166,14 @@ async function authorizeAsset(win, filePath) {
   }
 }
 
+// Application identity comes from the authoritative package metadata — the
+// same package.json productName/version that electron-builder packages and
+// the README references — rather than a separately hardcoded string. (In a
+// raw dev/test process, app.getName()/app.getVersion() would report
+// Electron's own identity instead.)
+const { productName: APP_NAME, version: APP_VERSION } =
+  require("../package.json");
+
 async function createDesktopWindow({
   show = true,
   dataDirectory = app.getPath("userData"),
@@ -175,9 +183,16 @@ async function createDesktopWindow({
   const { readProject, writeProject, encodeProject, RecoveryFile } =
     await import("./project-files.mjs");
   const { RecentProjects } = await import("./recents.mjs");
+  const { AppSettings } = await import("./settings.mjs");
   const { compile } = await import("../src/core/engine.mjs");
   const recovery = new RecoveryFile(dataDirectory);
-  const recents = new RecentProjects(dataDirectory);
+  const settings = new AppSettings(dataDirectory);
+  // A corrupt/missing settings file resolves to defaults here, so a fresh
+  // window always boots with a valid, complete preference set.
+  await settings.load();
+  const recents = new RecentProjects(dataDirectory, {
+    cap: settings.get("maxRecents"),
+  });
   const window = new BrowserWindow({
     width: 1440,
     height: 980,
@@ -430,6 +445,25 @@ async function createDesktopWindow({
       throw new Error("Invalid recent project.");
     return recents.remove(recentPath);
   });
+  // Preferences are validated and persisted by the settings store; a new
+  // recents cap applies to the live list the moment it is saved.
+  handle("settings:get", () => settings.all());
+  handle("settings:set", async (key, value) => {
+    const all = await settings.set(key, value);
+    if (key === "maxRecents") await recents.setCap(all.maxRecents);
+    return all;
+  });
+  handle("settings:reset", async () => {
+    const all = await settings.reset();
+    await recents.setCap(all.maxRecents).catch(() => {});
+    return all;
+  });
+  // Application identity comes from the authoritative package metadata
+  // loaded at module scope (see APP_NAME/APP_VERSION above).
+  handle("app:info", () => ({
+    name: APP_NAME,
+    version: APP_VERSION,
+  }));
   handle("recovery:read", async () => recovery.read());
   handle("recovery:write", (project) => recovery.write(project));
   handle("recovery:clear", () => recovery.clear());
@@ -541,7 +575,7 @@ async function createDesktopWindow({
   });
   if (show) window.once("ready-to-show", () => window.show());
   await window.loadURL(ENTRY + "?token=" + assetToken);
-  return { window, recovery, recents, assetToken, metadata: () => ({
+  return { window, recovery, recents, settings, assetToken, metadata: () => ({
     path: window.__currentPath,
     name: window.__currentPath ? path.basename(window.__currentPath) : "Untitled.framecode.json",
   }) };
@@ -553,6 +587,12 @@ async function createDesktopWindow({
 async function installMenu(window, stage = "editor") {
   const command = (name) => () =>
     window.webContents.send("desktop:command", name);
+  const settingsItem = () => ({
+    id: "appSettings",
+    label: "Settings\u2026",
+    accelerator: "CmdOrCtrl+,",
+    click: command("settings"),
+  });
   const homeFile = [
     {
       label: "New project",
@@ -564,6 +604,8 @@ async function installMenu(window, stage = "editor") {
       accelerator: "CmdOrCtrl+O",
       click: command("open"),
     },
+    { type: "separator" },
+    settingsItem(),
     { type: "separator" },
     { label: "Exit", click: () => window.close() },
   ];
@@ -612,6 +654,8 @@ async function installMenu(window, stage = "editor") {
             label: "Composition source\u2026",
             click: command("source"),
           },
+          { type: "separator" },
+          settingsItem(),
           { type: "separator" },
           { label: "Exit", click: () => window.close() },
         ],

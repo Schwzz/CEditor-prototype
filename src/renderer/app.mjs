@@ -57,7 +57,19 @@ let fileName = "Untitled.framecode.json",
   renderQueued = false,
   fullRender = true,
   lastNativeState = "",
-  menuAnchor = null;
+  menuAnchor = null,
+  recoveryUnusable = false;
+// Phase 2.3: user preferences. The persisted settings are read at boot and
+// every change is applied live and saved atomically in the main process.
+let appSettings = {
+  timelineSnap: true,
+  recoveryCopies: true,
+  maxRecents: 10,
+};
+function updateRecovery() {
+  recoveryEnabled = appSettings.recoveryCopies && !recoveryUnusable;
+  if (!recoveryEnabled) cancelAutosave();
+}
 const editing = () =>
   document.activeElement?.isContentEditable ||
   ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) ||
@@ -529,6 +541,10 @@ $("timelineSnap").onclick = () => {
   const enabled = $("timelineSnap").getAttribute("aria-pressed") !== "true";
   $("timelineSnap").setAttribute("aria-pressed", String(enabled));
   timeline.setSnap(enabled);
+  // The toolbar control and the Settings dialog share one preference:
+  // toggling here persists it and re-syncs the dialog (and vice versa,
+  // via applyPreferences in the dialog change handler).
+  void changeSetting("timelineSnap", enabled);
 };
 const stepFrame = (direction) =>
   seek(
@@ -635,6 +651,93 @@ if ($("homeNewProject")) {
   $("homeNewProject").onclick = () => void homeAction("new");
   $("homeOpenProject").onclick = () => void homeAction("open");
 }
+// Phase 2.3: Settings. A single dialog reachable from Home, the native File
+// menu (Ctrl+comma on both stages) — values apply live and persist through
+// the main process; the dialog always reflects the persisted state.
+function renderSettingsDialog() {
+  $("settingsTimelineSnap").checked = appSettings.timelineSnap;
+  $("settingsRecoveryCopies").checked = appSettings.recoveryCopies;
+  $("settingsMaxRecents").value = appSettings.maxRecents;
+}
+async function refreshAbout() {
+  try {
+    const info = await desktop.appInfo();
+    $("aboutName").textContent = info.name;
+    $("aboutVersion").textContent = "Version " + info.version;
+    return info;
+  } catch {
+    $("aboutVersion").textContent = "";
+    return null;
+  }
+}
+function openSettingsDialog() {
+  if ($("settingsDialog").open) return;
+  renderSettingsDialog();
+  void refreshAbout();
+  $("settingsDialog").showModal();
+}
+function applyPreferences() {
+  timeline.setSnap(appSettings.timelineSnap);
+  $("timelineSnap").setAttribute(
+    "aria-pressed",
+    String(appSettings.timelineSnap),
+  );
+}
+async function changeSetting(key, value) {
+  try {
+    const previousMax = appSettings.maxRecents;
+    appSettings = await desktop.setSetting(key, value);
+    applyPreferences();
+    updateRecovery();
+    // Runs for every change: while the preference is on it arms (or clears)
+    // recovery immediately, so enabling it on a dirty project resumes
+    // autosave without waiting for another edit; disable() inside
+    // updateRecovery cancels any pending autosave first.
+    scheduleRecovery();
+    $("settingsStatus").textContent =
+      key === "maxRecents" && value < previousMax
+        ? "Saved · the recents list was trimmed."
+        : "Saved.";
+    if (key === "maxRecents") void renderRecents();
+  } catch (error) {
+    // Show the failure and fall back to the persisted state.
+    $("settingsStatus").textContent = errorMessage(error) || "Not saved.";
+    // A failure triggered from the toolbar (dialog closed) must still be
+    // surfaced in the editor.
+    if (!$("settingsDialog").open)
+      toast(errorMessage(error) || "The preference was not saved.");
+  }
+  renderSettingsDialog();
+}
+$("homeSettings").onclick = () => openSettingsDialog();
+$("settingsTimelineSnap").onchange = () =>
+  void changeSetting("timelineSnap", $("settingsTimelineSnap").checked);
+$("settingsRecoveryCopies").onchange = () =>
+  void changeSetting("recoveryCopies", $("settingsRecoveryCopies").checked);
+$("settingsMaxRecents").onchange = () => {
+  const value = $("settingsMaxRecents").valueAsNumber;
+  if (Number.isInteger(value)) void changeSetting("maxRecents", value);
+  else {
+    $("settingsStatus").textContent =
+      "Enter a whole number between 1 and 20.";
+    $("settingsMaxRecents").value = appSettings.maxRecents;
+  }
+};
+$("settingsReset").onclick = async () => {
+  try {
+    appSettings = await desktop.resetSettings();
+    renderSettingsDialog();
+    applyPreferences();
+    updateRecovery();
+    // Same transition semantics as changeSetting: enabling recovery for a
+    // dirty project resumes autosave immediately.
+    scheduleRecovery();
+    $("settingsStatus").textContent = "Defaults restored.";
+  } catch (error) {
+    $("settingsStatus").textContent =
+      errorMessage(error) || "Could not restore defaults.";
+  }
+};
 // Recent Projects: the persisted list lives in the main process and only
 // records projects that were actually opened or saved. Home renders it,
 // reopens entries directly, and removes entries — the project file itself
@@ -768,10 +871,12 @@ $("saveTemplate").onclick = async () => {
 async function clearRecoveryAfterAdoption() {
   try {
     await desktop.clearRecovery();
-    recoveryEnabled = true;
+    recoveryUnusable = false;
+    updateRecovery();
     return true;
   } catch (error) {
-    recoveryEnabled = false;
+    recoveryUnusable = true;
+    updateRecovery();
     toast(
       "The project is intact. Old recovery could not be removed; automatic recovery is paused.",
     );
@@ -961,6 +1066,10 @@ async function command(name) {
       openModal("templatesDialog");
       return;
     }
+    if (name === "settings") {
+      openSettingsDialog();
+      return;
+    }
     if (name === "source") {
       // The removed header button was disabled while the source could not
       // be shared; the menu command keeps that contract.
@@ -1107,6 +1216,22 @@ document.addEventListener("visibilitychange", () => {
 });
 new ResizeObserver(() => timeline.setPlayhead()).observe($("timeline"));
 async function boot() {
+  // Preferences load before anything that consumes them; a persistence
+  // problem must leave the app on safe defaults, never block the launch.
+  try {
+    appSettings = await desktop.getSettings();
+  } catch {
+    appSettings = {
+      timelineSnap: true,
+      recoveryCopies: true,
+      maxRecents: 10,
+    };
+  }
+  updateRecovery();
+  applyPreferences();
+  void refreshAbout().then((info) => {
+    if (info) $("homeVersion").textContent = "v" + info.version;
+  });
   try {
     const recovery = await desktop.readRecovery();
     if (recovery) {
@@ -1147,7 +1272,8 @@ async function boot() {
       });
     }
   } catch (error) {
-    recoveryEnabled = false;
+    recoveryUnusable = true;
+    updateRecovery();
     toast(
       "Recovery could not be read. Save manually; the old recovery file has been preserved.",
     );

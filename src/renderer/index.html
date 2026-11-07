@@ -347,6 +347,7 @@
         <div class="home-mark">
           <span class="brand-mark" aria-hidden="true">f</span>
           <span class="home-appname">framecode</span>
+          <span class="home-version" id="homeVersion"></span>
         </div>
         <h1 class="home-heading">Project</h1>
         <div class="home-actions" role="group" aria-label="Project actions">
@@ -367,6 +368,9 @@
       <p class="home-foot" aria-hidden="true">
         Local project · .framecode.json
       </p>
+      <button id="homeSettings" class="home-settings-link" type="button">
+        Settings…
+      </button>
     </section>
     <dialog id="templatesDialog" class="modal wide">
       <div class="modal-heading">
@@ -430,6 +434,81 @@
         <nav id="guideTopics" aria-label="Guide topics"></nav>
         <article id="guideContent"></article>
       </div>
+    </dialog>
+    <dialog id="settingsDialog" class="modal">
+      <div class="modal-heading">
+        <div>
+          <span class="eyebrow">PREFERENCES</span>
+          <h2>Settings</h2>
+        </div>
+        <button class="icon-button close-dialog" aria-label="Close settings">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <p class="modal-description">
+        Changes are saved automatically and kept for your next session.
+      </p>
+      <div class="settings-list">
+        <label class="setting-row" for="settingsTimelineSnap">
+          <input
+            id="settingsTimelineSnap"
+            type="checkbox"
+            aria-label="Timeline snapping"
+          />
+          <span>
+            <strong>Timeline snapping</strong>
+            <small
+              >Snap timeline edits to frames, clip edges and the playhead.</small
+            >
+          </span>
+        </label>
+        <label class="setting-row" for="settingsRecoveryCopies">
+          <input
+            id="settingsRecoveryCopies"
+            type="checkbox"
+            aria-label="Automatic recovery copies"
+          />
+          <span>
+            <strong>Automatic recovery copies</strong>
+            <small
+              >Keep a local recovery copy of unsaved changes while you work.
+              Turning this off pauses automatic recovery saving.</small
+            >
+          </span>
+        </label>
+        <label class="setting-row" for="settingsMaxRecents">
+          <span>
+            <strong>Recent projects to keep</strong>
+            <small
+              >How many projects the Home recents list remembers (1–20).</small
+            >
+          </span>
+          <input
+            id="settingsMaxRecents"
+            type="number"
+            min="1"
+            max="20"
+            step="1"
+            aria-label="Number of recent projects to keep"
+          />
+        </label>
+        <p class="settings-status" id="settingsStatus" role="status"></p>
+        <div class="share-actions">
+          <button id="settingsReset" class="button secondary" type="button">
+            Reset to defaults
+          </button>
+        </div>
+      </div>
+      <hr class="settings-divider" />
+      <section class="about-block" id="aboutBlock" aria-label="Application information">
+        <span class="eyebrow">ABOUT</span>
+        <strong id="aboutName">Framecode</strong>
+        <span id="aboutVersion"></span>
+        <small
+          >A local code + timeline + preview editing prototype. Projects are
+          plain .framecode.json files saved on this computer.</small
+        >
+      </section>
     </dialog>
     <dialog id="recoveryDialog" class="modal">
       <h2>Recover your draft?</h2>
