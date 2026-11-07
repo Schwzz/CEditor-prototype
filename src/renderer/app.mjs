@@ -541,6 +541,10 @@ $("timelineSnap").onclick = () => {
   const enabled = $("timelineSnap").getAttribute("aria-pressed") !== "true";
   $("timelineSnap").setAttribute("aria-pressed", String(enabled));
   timeline.setSnap(enabled);
+  // The toolbar control and the Settings dialog share one preference:
+  // toggling here persists it and re-syncs the dialog (and vice versa,
+  // via applyPreferences in the dialog change handler).
+  void changeSetting("timelineSnap", enabled);
 };
 const stepFrame = (direction) =>
   seek(
@@ -685,7 +689,11 @@ async function changeSetting(key, value) {
     appSettings = await desktop.setSetting(key, value);
     applyPreferences();
     updateRecovery();
-    if (!store.dirty) scheduleRecovery();
+    // Runs for every change: while the preference is on it arms (or clears)
+    // recovery immediately, so enabling it on a dirty project resumes
+    // autosave without waiting for another edit; disable() inside
+    // updateRecovery cancels any pending autosave first.
+    scheduleRecovery();
     $("settingsStatus").textContent =
       key === "maxRecents" && value < previousMax
         ? "Saved · the recents list was trimmed."
@@ -694,6 +702,10 @@ async function changeSetting(key, value) {
   } catch (error) {
     // Show the failure and fall back to the persisted state.
     $("settingsStatus").textContent = errorMessage(error) || "Not saved.";
+    // A failure triggered from the toolbar (dialog closed) must still be
+    // surfaced in the editor.
+    if (!$("settingsDialog").open)
+      toast(errorMessage(error) || "The preference was not saved.");
   }
   renderSettingsDialog();
 }
@@ -717,7 +729,9 @@ $("settingsReset").onclick = async () => {
     renderSettingsDialog();
     applyPreferences();
     updateRecovery();
-    if (!store.dirty) scheduleRecovery();
+    // Same transition semantics as changeSetting: enabling recovery for a
+    // dirty project resumes autosave immediately.
+    scheduleRecovery();
     $("settingsStatus").textContent = "Defaults restored.";
   } catch (error) {
     $("settingsStatus").textContent =

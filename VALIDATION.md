@@ -5,7 +5,7 @@
 - `npm run check`: JavaScript module syntax checks.
 - `npm test`: 69 tests covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, settings persistence and validation, recents capping, and preview geometry.
 - `npm run build`: bundles CodeMirror and the renderer with esbuild, without external runtime resources.
-- `npm run test:desktop`: 71 integration checks in a real Electron process, including actual pointer input and filesystem writes.
+- `npm run test:desktop`: 73 integration checks in a real Electron process, including actual pointer input and filesystem writes.
 
 Desktop integration covers source/parameter synchronization, linked selection, timing handles, one-step drag Undo, preview hit testing/movement, context-menu splitting, clipboard snapshots, cancelled saves, native project serialization, invalid-source recovery, saving invalid drafts, unsaved Open/Close cancellation, cancelled and successful Open, recovery-cleanup failures, failed Save As, closing with Save and cancelled pickers, New/reset history, guide loading, scrolling/caret alignment at 100% and 125% zoom, recovery across window recreation, saving a restored draft, and preserving recovery when closed before a choice.
 

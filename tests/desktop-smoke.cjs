@@ -1494,6 +1494,142 @@ app
       document.querySelector('#settingsDialog .close-dialog').click(),
     );
     passed("persisted preferences survive a restart and drive the UI");
+    // Phase 2.3 review fixes: the editor toolbar snap control and the
+    // Settings dialog share one persisted preference, so a toolbar toggle
+    // must persist it (and the dialog must follow) regardless of which
+    // control made the change.
+    await cmd("new");
+    await wait(
+      () => document.body.dataset.stage === "editor",
+      "entered editor for settings sync checks",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("timelineSnap").getAttribute("aria-pressed"),
+      ),
+      "false",
+      "the persisted preference drives the editor toolbar too",
+    );
+    await page(() => document.getElementById("timelineSnap").click());
+    await persistedSetting(
+      (file) => file?.settings?.timelineSnap === true,
+      "editor snap toggle persisted the preference",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("timelineSnap").getAttribute("aria-pressed"),
+      ),
+      "true",
+    );
+    await cmd("settings");
+    assert.equal(
+      await page(() => document.getElementById("settingsTimelineSnap").checked),
+      true,
+      "the Settings dialog follows the editor toolbar toggle",
+    );
+    await page(() =>
+      document.querySelector('#settingsDialog .close-dialog').click(),
+    );
+    passed("editor snap toggle persists the preference and syncs the dialog");
+    // The earlier close-discard fixture leaves recovery.json as a directory
+    // in the shared data directory, so this window booted with recovery
+    // unusable. Rebuild a clean recovery state and relaunch: the transitions
+    // below then run in a window whose recovery autosave was usable from
+    // boot, and the relaunch proves the toolbar-set preference survives.
+    await fs.rm(path.join(dataDirectory, "recovery.json"), {
+      recursive: true,
+      force: true,
+    });
+    window.destroy();
+    ({ window } = await createDesktopWindow({
+      dataDirectory,
+      dialogs,
+      show: true,
+    }));
+    await installMenu(window, "home");
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "recovery-transition relaunch ready",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("timelineSnap").getAttribute("aria-pressed"),
+      ),
+      "true",
+      "the toolbar-set preference survives the restart",
+    );
+    await cmd("new");
+    await wait(
+      () => document.body.dataset.stage === "editor",
+      "entered editor for recovery transitions",
+    );
+    await field("param-title", "RECOVERY ONE", "input");
+    await wait(
+      async () => {
+        const snapshot = await window.framecodeDesktop.readRecovery();
+        return snapshot && /RECOVERY ONE/.test(snapshot.source);
+      },
+      "recovery copy of the first edit written",
+    );
+    await cmd("settings");
+    // Commit a second edit while the dialog is open, then immediately
+    // disable recovery so the pending autosave (600ms after the commit)
+    // should be cancelled rather than written.
+    await page(() => {
+      const input = document.getElementById("param-title");
+      input.value = "RECOVERY TWO";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page(() =>
+      document.getElementById("settingsRecoveryCopies").click(),
+    );
+    await persistedSetting(
+      (file) => file?.settings?.recoveryCopies === false,
+      "recovery copies disabled persisted",
+    );
+    const disabledSnapshot = await page(() =>
+      window.framecodeDesktop.readRecovery(),
+    );
+    assert.ok(
+      disabledSnapshot &&
+        /RECOVERY ONE/.test(disabledSnapshot.source) &&
+        !/RECOVERY TWO/.test(disabledSnapshot.source),
+      "the pending autosave from the second edit was cancelled",
+    );
+    await sleep(900);
+    assert.equal(
+      await page(() => window.framecodeDesktop.readRecovery()).then(
+        (snapshot) => snapshot && snapshot.source,
+      ),
+      disabledSnapshot.source,
+      "no autosave happens while recovery copies are disabled",
+    );
+    // Re-enable: the dirty project's autosave resumes and captures the
+    // second edit immediately, with no further edit required.
+    await page(() =>
+      document.getElementById("settingsRecoveryCopies").click(),
+    );
+    await persistedSetting(
+      (file) => file?.settings?.recoveryCopies === true,
+      "recovery copies enabled persisted",
+    );
+    await wait(
+      async () => {
+        const snapshot = await window.framecodeDesktop.readRecovery();
+        return snapshot && /RECOVERY TWO/.test(snapshot.source);
+      },
+      "recovery resumed and captured the pre-disable edit",
+    );
+    await page(() =>
+      document.querySelector('#settingsDialog .close-dialog').click(),
+    );
+    passed("recovery autosave cancels pending writes and resumes immediately");
+    // Leave no recovery copy behind: the next closed relaunch would other-
+    // wise block on the recovery-choice dialog instead of settling.
+    await page(() => window.framecodeDesktop.clearRecovery());
+    await page(() =>
+      window.framecodeDesktop.setDirty(false, "Settings test"),
+    );
     // A corrupt settings file must never block a launch: defaults return.
     await fs.writeFile(settingsPath, "{not json at all");
     window.destroy();
