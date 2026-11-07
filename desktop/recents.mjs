@@ -32,10 +32,17 @@ function validEntry(entry) {
 
 export class RecentProjects {
   #queue = Promise.resolve();
-  constructor(directory, { now = Date.now } = {}) {
+  constructor(directory, { now = Date.now, cap = MAX_RECENTS } = {}) {
     this.directory = directory;
     this.file = join(directory, "recents.json");
     this.now = now;
+    this.cap = cap === undefined || cap === null ? MAX_RECENTS : cap;
+    if (
+      typeof this.cap !== "number" ||
+      !Number.isInteger(this.cap) ||
+      this.cap < 1
+    )
+      throw new Error("Invalid recents cap.");
   }
   #enqueue(action) {
     const next = this.#queue.then(action);
@@ -60,7 +67,7 @@ export class RecentProjects {
     if (data?.format !== "framecode-recents" || data.version !== 1)
       return [];
     if (!Array.isArray(data.projects)) return [];
-    return data.projects.filter(validEntry).slice(0, MAX_RECENTS);
+    return data.projects.filter(validEntry).slice(0, this.cap ?? MAX_RECENTS);
   }
   #write(entries) {
     return atomicWrite(
@@ -101,7 +108,23 @@ export class RecentProjects {
         (entry) => normalizeRecentPath(entry.path) !== normalized,
       );
       entries.unshift({ path: filePath, name, openedAt: this.now() });
-      const kept = entries.slice(0, MAX_RECENTS);
+      const kept = entries.slice(0, this.cap);
+      await this.#write(kept);
+      return kept;
+    });
+  }
+  // Applies a new recents cap from Settings immediately: the stored list is
+  // re-read under the new cap and rewritten back when that drops entries.
+  setCap(cap) {
+    if (
+      typeof cap !== "number" ||
+      !Number.isInteger(cap) ||
+      cap < 1
+    )
+      throw new Error("Invalid recents cap.");
+    this.cap = cap;
+    return this.#enqueue(async () => {
+      const kept = (await this.#readRaw()).slice(0, this.cap);
       await this.#write(kept);
       return kept;
     });

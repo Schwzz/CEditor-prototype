@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld(
     openRecentProject: (recentPath) => invoke("project:open-recent", recentPath),
     listRecents: () => invoke("recents:list"),
     removeRecent: (recentPath) => invoke("recents:remove", recentPath),
+    getSettings: () => invoke("settings:get"),
+    setSetting: (key, value) => invoke("settings:set", key, value),
+    resetSettings: () => invoke("settings:reset"),
+    appInfo: () => invoke("app:info"),
     saveProject: (project, saveAs = false) =>
       invoke("project:save", project, saveAs),
     newProject: () => invoke("project:new"),

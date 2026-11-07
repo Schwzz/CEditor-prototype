@@ -22,7 +22,8 @@ let window,
   assetToken = "",
   rendererErrors = [],
   relinkConsent = 1;
-const dialogs = {
+    const packageJson = require("../package.json");
+    const dialogs = {
   showSaveDialog: async () =>
     saving ? { canceled: false, filePath: saving } : { canceled: true },
   showOpenDialog: async () => {
@@ -918,7 +919,26 @@ app
       source: relinkSource,
       lastValid: relinkSource,
     });
-    const readBack = await page(() => window.framecodeDesktop.readRecovery());
+    const readBackDeadline = Date.now() + 6000;
+    let readBack;
+    // The renderer's own autosave can legally rewrite pending copy; reseed
+    // until the relink fixture is what is actually on disk, so the check
+    // stays deterministic.
+    for (;;) {
+      await relinkRecovery.write({
+        format: "framecode-project",
+        version: 1,
+        source: relinkSource,
+        lastValid: relinkSource,
+      });
+      readBack = await page(() => window.framecodeDesktop.readRecovery());
+      if (
+        (readBack && /Relink/.test(readBack.source)) ||
+        Date.now() > readBackDeadline
+      )
+        break;
+      await sleep(120);
+    }
     assert.match(readBack.source, /Relink/);
     assert.equal((await net.fetch(assetUrl(relinkImgPath))).status, 403);
     passed("recovery read alone never authorizes image files");
@@ -1371,6 +1391,127 @@ app
       "a failed open leaves Recents untouched",
     );
     passed("failed opens never create misleading Recents entries");
+    // Phase 2.3: Settings. The File menu reaches a settings dialog on both
+    // stages; changes are persisted in the data directory and a fresh launch
+    // (new window, same data directory) applies them at boot.
+    const settingsPath = path.join(dataDirectory, "settings.json");
+    const readSettingsFile = async () => {
+      try {
+        return JSON.parse(await fs.readFile(settingsPath, "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const homeMenuBar = Menu.getApplicationMenu();
+    assert.equal(
+      homeMenuBar.getMenuItemById("appSettings") !== null,
+      true,
+      "Home File menu offers Settings…",
+    );
+    await cmd("settings");
+    assert.equal(
+      await page(() => document.getElementById("settingsDialog").open),
+      true,
+    );
+    assert.equal(
+      await page(() => document.getElementById("aboutName").textContent),
+      "Framecode",
+    );
+    assert.equal(
+      await page(() => document.getElementById("aboutVersion").textContent),
+      "Version " + packageJson.version,
+      "application information uses the authoritative package version",
+    );
+    passed("Settings opens from the Home File menu with accurate app info");
+    // Changing a checkbox applies live and persists promptly. The settings
+    // file is polled in the test process (the generic wait() helper runs its
+    // predicate inside the renderer, where the filesystem is not reachable).
+    const persistedSetting = async (test, description) => {
+      const limit = Date.now() + 8000;
+      while (Date.now() < limit) {
+        const file = await readSettingsFile();
+        if (file && test(file)) return file;
+        await sleep(50);
+      }
+      throw new Error("Timed out: " + description);
+    };
+    await page(() => document.getElementById("settingsTimelineSnap").click());
+    await persistedSetting(
+      (file) => file?.settings?.timelineSnap === false,
+      "timelineSnap preference persisted",
+    );
+    await field("settingsMaxRecents", 3, "change");
+    await persistedSetting(
+      (file) => file?.settings?.maxRecents === 3,
+      "maxRecents preference persisted",
+    );
+    const trimmed = await recents.list();
+    assert.equal(trimmed.length <= 3, true, "new cap trims the live list");
+    await page(() =>
+      document.querySelector('#settingsDialog .close-dialog').click(),
+    );
+    assert.equal(
+      await page(() => document.getElementById("settingsDialog").open),
+      false,
+    );
+    passed("setting changes apply live, persist, and trim recents");
+    await window.webContents.executeJavaScript(
+      'window.framecodeDesktop.setDirty(false,"Settings test")',
+    );
+    window.destroy();
+    // Restart simulation: the persisted preferences drive the boot state.
+    ({ window } = await createDesktopWindow({ dataDirectory, dialogs, show: true }));
+    await installMenu(window, "home");
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "settings relaunch ready",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("timelineSnap").getAttribute("aria-pressed"),
+      ),
+      "false",
+      "restored timelineSnap preference drives the timeline control",
+    );
+    assert.match(
+      await page(() => document.getElementById("homeVersion").textContent),
+      /^v\d/,
+      "Home shows the real application version",
+    );
+    await cmd("settings");
+    assert.equal(
+      await page(() => document.getElementById("settingsDialog").open),
+      true,
+    );
+    assert.equal(
+      await page(
+        () => document.getElementById("settingsTimelineSnap").checked,
+      ),
+      false,
+      "the settings dialog reflects the persisted preference",
+    );
+    await page(() =>
+      document.querySelector('#settingsDialog .close-dialog').click(),
+    );
+    passed("persisted preferences survive a restart and drive the UI");
+    // A corrupt settings file must never block a launch: defaults return.
+    await fs.writeFile(settingsPath, "{not json at all");
+    window.destroy();
+    ({ window } = await createDesktopWindow({ dataDirectory, dialogs, show: true }));
+    await installMenu(window, "home");
+    await wait(
+      () => document.body.dataset.ready === "true",
+      "corrupt-settings relaunch ready",
+    );
+    assert.equal(
+      await page(() =>
+        document.getElementById("timelineSnap").getAttribute("aria-pressed"),
+      ),
+      "true",
+      "corrupt settings fall back to safe defaults",
+    );
+    assert.deepEqual((await recents.list()).length <= 10, true);
+    passed("corrupt settings data is safe: defaults without a crash");
     await fs.rm(dataDirectory, { recursive: true, force: true });
     clearTimeout(deadline);
     console.log(`DESKTOP COMPLETE: ${checks} checks passed.`);

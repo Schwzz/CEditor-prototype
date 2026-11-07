@@ -1,6 +1,7 @@
 name: Windows desktop prototype
+# CI runs automatically on pull requests and via explicit workflow_dispatch;
+# the push trigger was removed to avoid duplicate runs on PR branches.
 on:
-  push:
   pull_request:
   workflow_dispatch:
 permissions:

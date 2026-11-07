@@ -24,6 +24,7 @@ The packaged app includes its runtime. You do not need Node.js, a separate termi
 - Drag timeline clips to move them. Pull either edge to resize, or enter exact start/end/length values in the inspector.
 - Right-click a clip, or press **Shift+F10** on it, for split, cut/copy/paste, duplicate, delete, and timing controls.
 - Save the composition as a local `.framecode.json` project.
+- Open **Settings…** from the Home screen or the File menu (Ctrl+,) to change how the editor behaves; preferences persist across sessions, and the same dialog shows the application name and version.
 
 **Undo/Redo is shared across the workspace.** Each completed pointer drag is one undo step. Loading a guide example, resetting, or loading a template is undoable. New/Open resets history after handling unsaved changes.
 
@@ -68,7 +69,9 @@ Projects store the composition code, parameter declarations, and last valid comp
 
 Open, Save, and Save As use Windows file dialogs. New, Open, and Close offer **Save / Discard / Cancel** when the project is dirty. Writes use a temporary file and atomic replacement; a cancelled or failed save does not mark the document clean.
 
-An unsaved recovery copy is stored in the app's per-user application-data folder, typically `%APPDATA%\Framecode`. On relaunch, restore it as a new unsaved project or explicitly discard it. Restoring a draft does not silently overwrite its former project file. Recovery is a convenience, not a versioned backup system.
+An unsaved recovery copy is stored in the app's per-user application-data folder, typically `%APPDATA%\Framecode`. On relaunch, restore it as a new unsaved project or explicitly discard it. Restoring a draft does not silently overwrite its former project file. Recovery is a convenience, not a versioned backup system. Automatic recovery copies can be turned off in Settings.
+
+Settings live in the same app-data folder and are validated on load: a missing or damaged settings file silently falls back to safe defaults. Timeline snapping (on by default), the recovery-copies toggle, and how many recent projects are kept (1–20, default 10) are the settings that exist today.
 
 For templates, use **Template source** to copy the full composition code or save a separate project file. This desktop prototype has no hosted sharing service.
 
@@ -78,6 +81,7 @@ For templates, use **Template source** to copy the full composition code or save
 | --- | --- |
 | Ctrl+N / Ctrl+O | New / Open project |
 | Ctrl+S / Ctrl+Shift+S | Save / Save As |
+| Ctrl+, | Settings |
 | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Shared Undo / Redo |
 | Ctrl+F / Ctrl+Enter | Search code / Run |
 | Space outside editable fields and buttons | Play / Pause |

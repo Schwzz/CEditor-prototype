@@ -188,3 +188,40 @@ test("normalizeRecentPath is null-safe and case-folds on Windows", () => {
     );
   }
 });
+
+test("a custom recents cap from Settings trims and limits the list", async () => {
+  const directory = await dir();
+  try {
+    const recents = new RecentProjects(directory, { cap: 3 });
+    for (let index = 0; index < 5; index++)
+      await recents.add(
+        join(directory, `P${index}.framecode.json`),
+        `P${index}.framecode.json`,
+      );
+    let list = await recents.list();
+    assert.deepEqual(
+      list.map((entry) => entry.name),
+      ["P4.framecode.json", "P3.framecode.json", "P2.framecode.json"],
+    );
+    // Lowering the cap applies to the stored list immediately...
+    await recents.setCap(2);
+    list = await new RecentProjects(directory).list();
+    assert.deepEqual(
+      list.map((entry) => entry.name),
+      ["P4.framecode.json", "P3.framecode.json"],
+    );
+    // ...and invalid caps are rejected without touching state.
+    await assert.rejects(async () => recents.setCap(0));
+    await assert.rejects(async () =>
+      new RecentProjects(directory, { cap: 1.5 }).list(),
+    );
+    // Raising the cap starts enforcing it with the next add.
+    await recents.setCap(4);
+    await recents.add(join(directory, "N.framecode.json"), "N.framecode.json");
+    list = await recents.list();
+    assert.equal(list.length, 3);
+    assert.equal(list[0].name, "N.framecode.json");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
