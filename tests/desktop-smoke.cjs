@@ -259,6 +259,19 @@ app
       "entered editor from Home",
     );
     passed("New Project from Home enters the editor");
+    // Phase 2.4 audit: the Run button advertises Ctrl+Enter (aria-keyshortcuts
+    // and an on-screen keyhint) — the shortcut must actually run the
+    // composition exactly like the button itself does.
+    await key("Enter", ["control"]);
+    await wait(
+      () =>
+        /up to date/i.test(
+          document.getElementById("toastMessage").textContent,
+        ),
+      "Ctrl+Enter runs the composition",
+    );
+    await page(() => document.getElementById("toast").setAttribute("hidden", ""));
+    passed("Run shortcut Ctrl+Enter executes like the Run button");
     // Editor chrome: full menus (Templates arrives asynchronously with the
     // dynamic template items) and the document title. The code panel starts
     // COLLAPSED: the launch state is the video-editing workspace (preview,
@@ -903,6 +916,35 @@ app
     passed("cancelled Open leaves the composition intact");
 
     // Recovery relink regressions: reads alone never authorize; consent does.
+    // The dirty project may still hold a scheduled recovery autosave from an
+    // earlier commit or undo (it fires 600ms after the store event). The
+    // relink fixtures below must control recovery.json without the renderer
+    // racing them, so first wait until the file has stayed unchanged longer
+    // than the autosave window: any pending write will have landed by then,
+    // and nothing in this window commits again during the relink scenario.
+    const recoveryPath = path.join(dataDirectory, "recovery.json");
+    const recoveryBytes = async () => {
+      try {
+        return await fs.readFile(recoveryPath, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }
+    };
+    let previousRecovery = await recoveryBytes();
+    let stabilized = false;
+    for (let attempt = 0; attempt < 12 && !stabilized; attempt++) {
+      await sleep(700);
+      const currentRecovery = await recoveryBytes();
+      if (currentRecovery === previousRecovery) stabilized = true;
+      else previousRecovery = currentRecovery;
+    }
+    assert.ok(
+      stabilized,
+      "recovery.json never stabilized within " +
+        12 * 700 +
+        "ms; a renderer recovery autosave kept rewriting it before the relink fixtures",
+    );
     const relinkImgPath = path.join(dataDirectory, "unlinked.png");
     await fs.writeFile(relinkImgPath, pngBuffer);
     const relinkSource =
@@ -950,14 +992,21 @@ app
     assert.equal((await net.fetch(assetUrl(relinkImgPath))).status, 403);
     passed("declining the relink consent dialog leaves images unauthorized");
     relinkConsent = 0;
-    // The renderer's own recovery autosave can rewrite the file pending write;
-    // reseed so the consent scenario always starts from the relink fixture.
+    // Grant path reseed: after the quiesce above no renderer write can race
+    // the fixtures, so one write guarantees the fixture is what the granted
+    // consent scan reads.
     await relinkRecovery.write({
       format: "framecode-project",
       version: 1,
       source: relinkSource,
       lastValid: relinkSource,
     });
+    assert.equal(
+      /Relink/.test(
+        (await page(() => window.framecodeDesktop.readRecovery())).source,
+      ),
+      true,
+    );
     const granted = await page(() =>
       window.framecodeDesktop.relinkRecoveryAssets(),
     );
@@ -1211,6 +1260,13 @@ app
       "explicit Discard must close even if old recovery cannot be removed",
     );
     passed("Close Discard is not blocked by recovery cleanup failure");
+    // The discard fixture deliberately leaves recovery.json as a directory.
+    // Remove it before any later launch, otherwise every subsequent window
+    // boots with a failed recovery read and an extra Home toast.
+    await fs.rm(path.join(dataDirectory, "recovery.json"), {
+      recursive: true,
+      force: true,
+    });
     // Phase 2.1: Open Project from the Home screen of a fresh launch loads
     // the chosen file and enters the editor.
     ({ window } = await createDesktopWindow({
@@ -1345,7 +1401,9 @@ app
     assert.equal(missingEntry?.missing, true, "vanished project is marked missing");
     await clickRecent("HomeFixture.framecode.json");
     await wait(
-      () => !document.getElementById("toast").hidden,
+      () =>
+        !document.getElementById("toast").hidden &&
+        /missing/.test(document.getElementById("toastMessage").textContent),
       "missing project toast",
     );
     assert.match(
@@ -1531,11 +1589,11 @@ app
       document.querySelector('#settingsDialog .close-dialog').click(),
     );
     passed("editor snap toggle persists the preference and syncs the dialog");
-    // The earlier close-discard fixture leaves recovery.json as a directory
-    // in the shared data directory, so this window booted with recovery
-    // unusable. Rebuild a clean recovery state and relaunch: the transitions
-    // below then run in a window whose recovery autosave was usable from
-    // boot, and the relaunch proves the toolbar-set preference survives.
+    // Keep the recovery state clean for the transition tests below (a prior
+    // fixture can leave malformed recovery data in this shared directory).
+    // Relaunch so the transitions run in a window whose recovery autosave
+    // was usable from boot; the relaunch also proves the toolbar-set
+    // preference survives a restart.
     await fs.rm(path.join(dataDirectory, "recovery.json"), {
       recursive: true,
       force: true,

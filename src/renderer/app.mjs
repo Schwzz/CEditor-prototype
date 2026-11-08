@@ -1167,6 +1167,13 @@ document.addEventListener("keydown", (event) => {
     void command(event.shiftKey ? "saveAs" : "save");
     return;
   }
+  // The Run button advertises Ctrl+Enter (aria-keyshortcuts and keyhint);
+  // this binding is what makes that claim true, in the editor stage.
+  if (modifier && event.key === "Enter") {
+    event.preventDefault();
+    $("run").click();
+    return;
+  }
   if (modifier && !editing()) {
     const keys = {
       z: event.shiftKey ? "redo" : "undo",

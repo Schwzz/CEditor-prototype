@@ -140,9 +140,16 @@ module.exports = async function ({
   await replaceCode(shape);
   await page(async () => {
     document.querySelector(".canvas-shell").style.width = "160px";
-    await new Promise((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve)),
-    );
+    // Wait two frames so layout settles, but do not trust the compositor:
+    // an occluded or throttled window can defer rAF indefinitely, so a
+    // bounded fallback keeps the suite from hanging while still preferring
+    // the real frames when they are available.
+    await Promise.race([
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+      new Promise((resolve) => setTimeout(resolve, 200)),
+    ]);
   });
   await page(() => document.querySelector('.clip-body[data-clip="s"]').click());
   const geometry = await page(() => {
