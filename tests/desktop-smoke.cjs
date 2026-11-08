@@ -932,12 +932,19 @@ app
       }
     };
     let previousRecovery = await recoveryBytes();
-    for (let attempt = 0; attempt < 12; attempt++) {
+    let stabilized = false;
+    for (let attempt = 0; attempt < 12 && !stabilized; attempt++) {
       await sleep(700);
       const currentRecovery = await recoveryBytes();
-      if (currentRecovery === previousRecovery) break;
-      previousRecovery = currentRecovery;
+      if (currentRecovery === previousRecovery) stabilized = true;
+      else previousRecovery = currentRecovery;
     }
+    assert.ok(
+      stabilized,
+      "recovery.json never stabilized within " +
+        12 * 700 +
+        "ms; a renderer recovery autosave kept rewriting it before the relink fixtures",
+    );
     const relinkImgPath = path.join(dataDirectory, "unlinked.png");
     await fs.writeFile(relinkImgPath, pngBuffer);
     const relinkSource =
