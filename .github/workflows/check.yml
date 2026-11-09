@@ -79,6 +79,8 @@ jobs:
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - name: Build Tauri Windows bundle
         run: npm run build:tauri
+      - name: Tauri smoke test (launch real app)
+        run: npm run test:tauri
       - name: Upload Tauri Windows executable
         uses: actions/upload-artifact@v4
         with:

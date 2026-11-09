@@ -1,5 +1,10 @@
 import "./styles.css";
 import "./tauri-probe.mjs";
+// Truthful Tauri desktop adapter: installs window.framecodeDesktop when
+// running in the Tauri webview (no-op under Electron, where the preload
+// provides the bridge). Must be imported first so the install runs before
+// the module body reads `window.framecodeDesktop` below.
+import "./tauri-bridge.mjs";
 import { DocumentStore } from "../core/document.mjs";
 import { DEFAULT_SOURCE, TEMPLATES, replaceParam } from "../core/engine.mjs";
 import {
