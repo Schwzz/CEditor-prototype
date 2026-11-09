@@ -7,3 +7,5 @@ node_modules/
 build/
 release/
 .superpowers/
+src-tauri/target/
+src-tauri/gen/schemas/

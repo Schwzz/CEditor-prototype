@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main Framecode window (application commands are not ACL-gated; this grants the core defaults).",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

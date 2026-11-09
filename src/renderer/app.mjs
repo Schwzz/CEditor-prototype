@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./tauri-probe.mjs";
 import { DocumentStore } from "../core/document.mjs";
 import { DEFAULT_SOURCE, TEMPLATES, replaceParam } from "../core/engine.mjs";
 import {
