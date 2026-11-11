@@ -59,3 +59,105 @@ jobs:
           name: Desktop-QA
           path: build/qa/
           if-no-files-found: ignore
+  tauri:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Cargo check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build Tauri Windows bundle
+        run: npm run build:tauri
+      - name: Install WebView2 Runtime
+        shell: pwsh
+        run: |
+          # The Windows Server runner image ships Edge/Chrome but NOT the
+          # Microsoft Edge WebView2 Runtime (desktop Windows has it in-box;
+          # Server does not). Without it the Tauri app starts, fails to
+          # create its webview, and silently hangs alive with no window and
+          # no CDP endpoint - which is how the smoke test first failed
+          # ("CDP endpoint never became reachable").
+          #
+          # The Evergreen STANDALONE installer is used because the old
+          # bootstrapper fwlinks (link=2099617 and similar) are retired:
+          # go.microsoft.com now 302s them to Bing, so the "installer"
+          # arrived as a ~200 KB HTML page and CreateProcess refused to run
+          # it ("file or directory is corrupted and unreadable").
+          # linkid=2124701 is the live Microsoft fwlink for the x64
+          # standalone installer (~205 MB, Authenticode-signed), verified
+          # by MZ-header + signature checks before use.
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $installer = Join-Path $env:TEMP 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2124701" -OutFile $installer
+          # Verify the download is a plausible Windows executable before
+          # running it: present, reasonable size, MZ PE signature.
+          if (!(Test-Path $installer)) { throw "Installer download failed: $installer not found." }
+          $size = (Get-Item $installer).Length
+          if ($size -lt 10MB) { throw "Installer looks wrong: only $size bytes (expected ~205 MB); refusing to run it." }
+          $mz = [System.IO.File]::ReadAllBytes($installer)[0..1]
+          if ($mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) { throw "Installer is not a Windows executable (first bytes: $($mz[0]),$($mz[1]); expected MZ = 77,90)." }
+          "Installer verified: $([math]::Round($size/1MB,1)) MB, valid PE header."
+          # Explicit working directory: the inherited repo checkout
+          # directory is reported in the runner's Start-Process error and
+          # must never be a factor in launching the installer.
+          $proc = Start-Process -FilePath $installer -ArgumentList "/silent","/install" -Wait -PassThru -WorkingDirectory $env:TEMP
+          "Installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) { throw "WebView2 runtime installer failed with exit code $($proc.ExitCode)." }
+          $runtime = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue
+          if (!$runtime -or !$runtime.pv -or $runtime.pv -eq '0.0.0.0') { throw "WebView2 Runtime registry entry missing or invalid after installation." }
+          "WebView2 Runtime installed: $($runtime.pv)"
+      - name: Prepare non-elevated session for WebView2 CDP
+        shell: pwsh
+        run: |
+          # WebView2 Runtime >=150 drops the WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+          # environment variable (which the smoke test uses to open the CDP port)
+          # when the host process is ELEVATED - and GitHub-hosted Windows runners
+          # run as administrator. By design, Microsoft only honors HKLM policy and
+          # the WebView2 API there (WebView2Feedback#5645; see also
+          # tauri-apps/wry#1782). The fix is to run the smoke test de-elevated, the
+          # way a real user would launch the app. gsudo lowers the integrity of
+          # the test process without a second account; this is the same approach
+          # Tauri's own Windows e2e workflows use.
+          if (-not (Get-Command gsudo.exe -ErrorAction SilentlyContinue)) {
+            winget install --id gerardog.gsudo --exact --version 2.6.0 --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+          $gsudo = (Get-Command gsudo.exe -ErrorAction SilentlyContinue).Source
+          if (!$gsudo) {
+            # Depending on the winget manifest, gsudo lands either in the
+            # portable Links dir (on PATH only after a session refresh) or in
+            # Program Files via its installer.
+            foreach ($candidate in @(
+              (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\gsudo.exe'),
+              "$env:ProgramFiles\gsudo\Current\gsudo.exe"
+            )) {
+              if (Test-Path $candidate) { $gsudo = $candidate; break }
+            }
+          }
+          if (!$gsudo -or !(Test-Path $gsudo)) { throw "gsudo.exe not found after installation." }
+          # The de-elevated test process must be able to read the checkout and
+          # the freshly built binary inside it.
+          icacls "$env:GITHUB_WORKSPACE" /grant "${env:USERNAME}:(OI)(CI)M" | Out-Null
+          "GSUDO_EXE=$gsudo" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "gsudo prepared: $gsudo (runner user: $env:USERNAME)"
+      - name: Tauri smoke test (launch real app)
+        shell: pwsh
+        run: '& $env:GSUDO_EXE --integrity Medium node scripts/test-tauri.mjs'
+      - name: Upload Tauri Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Framecode-Tauri-Windows-x64
+          path: src-tauri/target/release/framecode.exe
+          if-no-files-found: error
+          retention-days: 7

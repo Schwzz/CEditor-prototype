@@ -1503,8 +1503,47 @@ app
       (file) => file?.settings?.maxRecents === 3,
       "maxRecents preference persisted",
     );
-    const trimmed = await recents.list();
-    assert.equal(trimmed.length <= 3, true, "new cap trims the live list");
+    // The cap is applied by the main process in two observable steps:
+    // settings:set writes the settings file, then recents.setCap enqueues
+    // the trim-and-rewrite of recents.json. Because list() slices with the
+    // already-updated in-memory cap, a trimmed live list alone does not
+    // prove the trimmed list was persisted - poll both the live list AND
+    // the actual recents.json until they agree with the new cap, then
+    // assert on the settled state. The assertion strength is unchanged.
+    const recentsPath = path.join(dataDirectory, "recents.json");
+    const readRecentsFile = async () => {
+      try {
+        const data = JSON.parse(await fs.readFile(recentsPath, "utf8"));
+        return Array.isArray(data?.projects) ? data.projects : null;
+      } catch {
+        return null;
+      }
+    };
+    const trimLimit = Date.now() + 8000;
+    let trimmed;
+    let stored;
+    do {
+      trimmed = await recents.list();
+      stored = await readRecentsFile();
+      if (trimmed.length <= 3 && stored && stored.length <= 3) break;
+      await sleep(50);
+    } while (Date.now() < trimLimit);
+    assert.equal(
+      trimmed.length <= 3,
+      true,
+      "new cap trims the live list (still " +
+        trimmed.length +
+        " entries after 8s: " +
+        trimmed.map((entry) => entry.name).join(", ") +
+        ")",
+    );
+    assert.equal(
+      stored !== null && stored.length <= 3,
+      true,
+      "new cap trims the persisted recents.json (file holds " +
+        (stored ? stored.length : "no readable") +
+        " projects after 8s)",
+    );
     await page(() =>
       document.querySelector('#settingsDialog .close-dialog').click(),
     );
