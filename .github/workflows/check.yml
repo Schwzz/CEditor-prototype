@@ -79,6 +79,21 @@ jobs:
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - name: Build Tauri Windows bundle
         run: npm run build:tauri
+      - name: Install WebView2 Runtime
+        shell: pwsh
+        run: |
+          # The Windows Server runner image ships Edge/Chrome but NOT the
+          # Microsoft Edge WebView2 Runtime (desktop Windows has it in-box;
+          # Server does not). Without it the Tauri app starts, fails to
+          # create its webview, and silently hangs alive with no window and
+          # no CDP endpoint - which is exactly how the smoke test used to
+          # fail ("CDP endpoint never became reachable"). Install the
+          # Evergreen runtime before launching the app.
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?link=2099617" -OutFile "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
+          $proc = Start-Process -FilePath "$env:TEMP\MicrosoftEdgeWebview2Setup.exe" -ArgumentList "/silent","/install" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "WebView2 runtime installer failed with exit code $($proc.ExitCode)." }
+          $runtime = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+          "WebView2 Runtime installed: $($runtime.pv)"
       - name: Tauri smoke test (launch real app)
         run: npm run test:tauri
       - name: Upload Tauri Windows executable

@@ -3,7 +3,10 @@
 // existing frontend boots to the Home screen with the truthful desktop
 // adapter installed and no uncaught startup errors.
 //
-// Prerequisite: a built Tauri binary. Resolution order:
+// Prerequisite: a built Tauri binary AND the Microsoft Edge WebView2
+// Runtime (desktop Windows ships it in-box; Windows Server does not - the
+// CI workflow installs it in a dedicated step). Resolution order for the
+// executable:
 //   1. FRAMECODE_TAURI_EXE environment variable (local runs that redirect
 //      CARGO_TARGET_DIR, CI artifact paths, etc.)
 //   2. src-tauri/target/release/framecode.exe (plain CI / default builds)
@@ -11,11 +14,42 @@
 // The tab is driven over CDP exactly like scripts/test-desktop.mjs drives
 // Electron; the app itself is launched the way a real user launches it.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import process from "node:process";
+
+// The WebView2 Evergreen runtime records its version under this key. If it
+// is absent the Tauri webview cannot exist: the app process then stays
+// alive with no window and no CDP endpoint (verified experimentally), so
+// failing fast here with the real cause beats a blind CDP timeout.
+const WEBVIEW2_REG_KEY =
+  "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+function webview2RuntimeVersion() {
+  if (process.platform !== "win32") return null;
+  const { status, stdout } = spawnSync("reg", ["query", WEBVIEW2_REG_KEY, "/v", "pv"], {
+    encoding: "utf8",
+  });
+  if (status !== 0) return null;
+  const match = stdout.match(/pv\s+REG_SZ\s+(\S+)/);
+  return match ? match[1] : null;
+}
+
+const runtimeVersion = webview2RuntimeVersion();
+if (!runtimeVersion) {
+  console.error("TAURI SMOKE FAIL: Microsoft Edge WebView2 Runtime is not installed.");
+  console.error(
+    "The Tauri app cannot create a webview without it (the process would stay " +
+      "alive with no window and no CDP endpoint). Desktop Windows ships the " +
+      "runtime in-box; Windows Server runners must install it first - see the " +
+      "'Install WebView2 Runtime' step in .github/workflows/check.yml.",
+  );
+  process.exit(1);
+}
+console.log(`WebView2 Runtime: ${runtimeVersion}`);
 
 const exePath =
   process.env.FRAMECODE_TAURI_EXE ??
@@ -42,23 +76,59 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const debugPort = await freePort();
 console.log(`Launching ${exePath} with CDP on port ${debugPort}`);
+
+// Capture the app's own output; Tauri/wry panics (e.g. webview creation
+// failures) surface on stderr and belong in the failure report.
+const stdoutPath = join(tmpdir(), "framecode-tauri-smoke-stdout.log");
+const stderrPath = join(tmpdir(), "framecode-tauri-smoke-stderr.log");
+const stdoutFd = openSync(stdoutPath, "w");
+const stderrFd = openSync(stderrPath, "w");
 const app = spawn(exePath, [], {
   env: {
     ...process.env,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
   },
-  stdio: "ignore",
+  stdio: ["ignore", stdoutFd, stderrFd],
 });
+
+const appState = () => {
+  const exited = app.exitCode !== null || app.signalCode !== null;
+  if (!exited) return "alive";
+  return (
+    `exited (code ${app.exitCode ?? "?"}` +
+    `${app.signalCode ? `, signal ${app.signalCode}` : ""})`
+  );
+};
+const appLogs = () => {
+  const lines = [];
+  for (const [label, path] of [["stdout", stdoutPath], ["stderr", stderrPath]]) {
+    try {
+      const content = readFileSync(path, "utf8").trim();
+      if (content) lines.push(`--- app ${label} ---\n${content}`);
+    } catch {
+      // A missing/empty log file needs no reporting.
+    }
+  }
+  return lines.join("\n");
+};
 
 let exitCode = 0;
 try {
   const crashed = new Promise((_, reject) => {
-    app.once("exit", (code) =>
-      reject(new Error(`Tauri app exited early with code ${code}`)),
-    );
+    app.once("exit", () => {
+      reject(
+        new Error(
+          `Tauri app ${appState()} before the smoke test could drive it\n${appLogs()}`,
+        ),
+      );
+    });
   });
   const cdpAvail = (async () => {
     for (let attempt = 0; attempt < 200; attempt++) {
+      if (app.exitCode !== null || app.signalCode !== null)
+        throw new Error(
+          `Tauri app ${appState()} while waiting for CDP\n${appLogs()}`,
+        );
       try {
         const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
         const targets = await res.json();
@@ -69,7 +139,10 @@ try {
       }
       await sleep(250);
     }
-    throw new Error("WebView2 CDP endpoint never became reachable");
+    throw new Error(
+      "WebView2 CDP endpoint never became reachable\n" +
+        `app process: ${appState()}\n${appLogs()}`,
+    );
   })();
 
   const page = await Promise.race([cdpAvail, crashed]);
