@@ -1503,8 +1503,28 @@ app
       (file) => file?.settings?.maxRecents === 3,
       "maxRecents preference persisted",
     );
-    const trimmed = await recents.list();
-    assert.equal(trimmed.length <= 3, true, "new cap trims the live list");
+    // The cap is applied by the main process as a separate queued step
+    // (settings:set writes the settings file first, then awaits
+    // recents.setCap), so settings persistence alone does not prove the
+    // live list is already trimmed. Poll the live list until the cap
+    // applies, then assert on the settled state; the assertion itself is
+    // unchanged in strength.
+    const trimLimit = Date.now() + 8000;
+    let trimmed;
+    do {
+      trimmed = await recents.list();
+      if (trimmed.length <= 3) break;
+      await sleep(50);
+    } while (Date.now() < trimLimit);
+    assert.equal(
+      trimmed.length <= 3,
+      true,
+      "new cap trims the live list (still " +
+        trimmed.length +
+        " entries after 8s: " +
+        trimmed.map((entry) => entry.name).join(", ") +
+        ")",
+    );
     await page(() =>
       document.querySelector('#settingsDialog .close-dialog').click(),
     );
