@@ -112,6 +112,56 @@ const appLogs = () => {
   return lines.join("\n");
 };
 
+// Failure-path evidence for the CDP endpoint itself: the actual browser
+// process command lines (shows whether --remote-debugging-port survived
+// into the WebView2 environment) and the TCP state of the chosen port.
+const cdpDiagnostics = () => {
+  const lines = [];
+  try {
+    const { status, stdout } = spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | Select-Object -ExpandProperty CommandLine",
+      ],
+      { encoding: "utf8", timeout: 20000 },
+    );
+    if (status === 0 && stdout.trim()) {
+      lines.push(`--- msedgewebview2 command lines ---\n${stdout.trim()}`);
+      lines.push(
+        `remote-debugging-port in browser args: ${
+          stdout.includes("--remote-debugging-port") ? "present" : "DROPPED"
+        }`,
+      );
+    } else {
+      lines.push("no msedgewebview2 processes found (webview never created)");
+    }
+  } catch {
+    // Diagnostics are best-effort; never mask the real failure.
+  }
+  try {
+    const { status, stdout } = spawnSync("netstat", ["-ano", "-p", "tcp"], {
+      encoding: "utf8",
+      timeout: 20000,
+    });
+    if (status === 0) {
+      const rows = stdout
+        .split(/\r?\n/)
+        .filter((line) => line.includes(`:${debugPort} `))
+        .map((line) => line.trim());
+      lines.push(
+        `port ${debugPort} tcp state: ${
+          rows.length ? rows.join(" | ") : "not listening"
+        }`,
+      );
+    }
+  } catch {
+    // Diagnostics are best-effort; never mask the real failure.
+  }
+  return lines.join("\n");
+};
+
 let exitCode = 0;
 try {
   const crashed = new Promise((_, reject) => {
@@ -145,7 +195,11 @@ try {
     }
     throw new Error(
       "WebView2 CDP endpoint never became reachable\n" +
-        `app process: ${appState()}\n${appLogs()}`,
+        `app process: ${appState()}\n${appLogs()}\n${cdpDiagnostics()}\n` +
+        "If 'remote-debugging-port: DROPPED' above, the host process is " +
+        "elevated and WebView2 Runtime >=150 discards the env var by design " +
+        "(WebView2Feedback#5645, tauri-apps/wry#1782); the CI workflow runs " +
+        "this test de-elevated via gsudo --integrity Medium for that reason.",
     );
   })();
 
@@ -176,8 +230,10 @@ try {
     ws.addEventListener("open", async () => {
       try {
         // Wait for the renderer to finish booting: app.mjs sets
-        // data-ready="true" on <body> only after boot() completes.
-        await send("Runtime.evaluate", {
+        // data-ready="true" on <body> only after boot() completes. A false
+        // result is an explicit failure, not a fallthrough into checks that
+        // would fail with unrelated symptoms.
+        const ready = await send("Runtime.evaluate", {
           expression: `(async () => {
             for (let i = 0; i < 200; i++) {
               if (document.body?.dataset?.ready === "true") return true;
@@ -188,6 +244,20 @@ try {
           awaitPromise: true,
           returnByValue: true,
         });
+        if (ready?.result?.value !== true) {
+          const stage = await send("Runtime.evaluate", {
+            expression: "String(document.body?.dataset?.stage ?? null)",
+            returnByValue: true,
+          });
+          ws.close();
+          rejectChecks(
+            new Error(
+              "renderer never signaled readiness: body[data-ready] did not " +
+                `become "true" within 20s (stage=${stage?.result?.value})`,
+            ),
+          );
+          return;
+        }
         const results = {};
         const evaluate = async (name, expression) => {
           const { result } = await send("Runtime.evaluate", {

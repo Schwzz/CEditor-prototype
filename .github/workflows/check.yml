@@ -118,8 +118,42 @@ jobs:
           $runtime = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue
           if (!$runtime -or !$runtime.pv -or $runtime.pv -eq '0.0.0.0') { throw "WebView2 Runtime registry entry missing or invalid after installation." }
           "WebView2 Runtime installed: $($runtime.pv)"
+      - name: Prepare non-elevated session for WebView2 CDP
+        shell: pwsh
+        run: |
+          # WebView2 Runtime >=150 drops the WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+          # environment variable (which the smoke test uses to open the CDP port)
+          # when the host process is ELEVATED - and GitHub-hosted Windows runners
+          # run as administrator. By design, Microsoft only honors HKLM policy and
+          # the WebView2 API there (WebView2Feedback#5645; see also
+          # tauri-apps/wry#1782). The fix is to run the smoke test de-elevated, the
+          # way a real user would launch the app. gsudo lowers the integrity of
+          # the test process without a second account; this is the same approach
+          # Tauri's own Windows e2e workflows use.
+          if (-not (Get-Command gsudo.exe -ErrorAction SilentlyContinue)) {
+            winget install --id gerardog.gsudo --exact --version 2.6.0 --accept-source-agreements --accept-package-agreements --disable-interactivity
+          }
+          $gsudo = (Get-Command gsudo.exe -ErrorAction SilentlyContinue).Source
+          if (!$gsudo) {
+            # Depending on the winget manifest, gsudo lands either in the
+            # portable Links dir (on PATH only after a session refresh) or in
+            # Program Files via its installer.
+            foreach ($candidate in @(
+              (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\gsudo.exe'),
+              "$env:ProgramFiles\gsudo\Current\gsudo.exe"
+            )) {
+              if (Test-Path $candidate) { $gsudo = $candidate; break }
+            }
+          }
+          if (!$gsudo -or !(Test-Path $gsudo)) { throw "gsudo.exe not found after installation." }
+          # The de-elevated test process must be able to read the checkout and
+          # the freshly built binary inside it.
+          icacls "$env:GITHUB_WORKSPACE" /grant "${env:USERNAME}:(OI)(CI)M" | Out-Null
+          "GSUDO_EXE=$gsudo" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "gsudo prepared: $gsudo (runner user: $env:USERNAME)"
       - name: Tauri smoke test (launch real app)
-        run: npm run test:tauri
+        shell: pwsh
+        run: '& $env:GSUDO_EXE --integrity Medium node scripts/test-tauri.mjs'
       - name: Upload Tauri Windows executable
         uses: actions/upload-artifact@v4
         with:
