@@ -182,10 +182,15 @@ try {
       try {
         const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
         const targets = await res.json();
-        // Wait for the app's real page, not the transient about:blank
-        // target that can exist before the Tauri webview navigates.
+        // Wait for the app's real page target: the URL must be the Tauri app
+        // document (http://tauri.localhost on Windows, or a tauri:// custom
+        // protocol) and never the transient about:blank target that exists
+        // before and during the first navigation.
         const page = targets.find(
-          (t) => t.type === "page" && /tauri/.test(t.url),
+          (t) =>
+            t.type === "page" &&
+            !/^about:blank/i.test(t.url) &&
+            /tauri\.localhost|^tauri:\/\//i.test(t.url),
         );
         if (page) return page;
       } catch {
@@ -204,7 +209,9 @@ try {
   })();
 
   const page = await Promise.race([cdpAvail, crashed]);
-  console.log(`CDP page target: ${page.title || "(untitled)"}`);
+  console.log(
+    `CDP page target: ${page.title || "(untitled)"} (${page.url})`,
+  );
 
   const checks = await new Promise((resolveChecks, rejectChecks) => {
     const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -231,6 +238,8 @@ try {
     // "Execution context was destroyed". Retry on the freshly created
     // execution context instead of failing the smoke run on the race.
     const evaluateStable = async (name, expression) => {
+      // Wall-clock cap so retries cannot stretch the run unboundedly.
+      const deadline = Date.now() + 30000;
       for (let attempt = 0; ; attempt++) {
         try {
           const { result } = await send("Runtime.evaluate", {
@@ -241,6 +250,7 @@ try {
           return result?.value ?? result?.description ?? null;
         } catch (error) {
           if (
+            Date.now() > deadline ||
             attempt >= 40 ||
             !/Execution context was destroyed/i.test(String(error.message))
           ) {
@@ -267,15 +277,21 @@ try {
             return false;
           })()`);
         if (ready !== true) {
-          const stage = await evaluateStable(
-            "stage",
-            "String(document.body?.dataset?.stage ?? null)",
+          // Report what the page actually looks like when readiness never
+          // arrives: current URL, DOM readyState, boot stage.
+          const detail = await evaluateStable(
+            "detail",
+            `JSON.stringify({
+              href: String(location.href),
+              readyState: document.readyState,
+              stage: String(document.body?.dataset?.stage ?? null),
+            })`,
           );
           ws.close();
           rejectChecks(
             new Error(
               "renderer never signaled readiness: body[data-ready] did not " +
-                `become "true" within 20s (stage=${stage})`,
+                `become "true" within 20s (page state: ${detail})`,
             ),
           );
           return;
@@ -330,7 +346,17 @@ try {
         resolveChecks(results);
       } catch (error) {
         ws.close();
-        rejectChecks(error);
+        // Annotate evaluation failures with the picked target so a stale or
+        // wrong page is immediately visible in CI logs.
+        rejectChecks(
+          error instanceof Error
+            ? new Error(
+                `${error.message}\n(CDP target: ${page.url}, title: ${
+                  page.title || "(untitled)"
+                })`,
+              )
+            : error,
+        );
       }
     });
   });
