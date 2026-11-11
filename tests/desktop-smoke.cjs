@@ -1503,17 +1503,29 @@ app
       (file) => file?.settings?.maxRecents === 3,
       "maxRecents preference persisted",
     );
-    // The cap is applied by the main process as a separate queued step
-    // (settings:set writes the settings file first, then awaits
-    // recents.setCap), so settings persistence alone does not prove the
-    // live list is already trimmed. Poll the live list until the cap
-    // applies, then assert on the settled state; the assertion itself is
-    // unchanged in strength.
+    // The cap is applied by the main process in two observable steps:
+    // settings:set writes the settings file, then recents.setCap enqueues
+    // the trim-and-rewrite of recents.json. Because list() slices with the
+    // already-updated in-memory cap, a trimmed live list alone does not
+    // prove the trimmed list was persisted - poll both the live list AND
+    // the actual recents.json until they agree with the new cap, then
+    // assert on the settled state. The assertion strength is unchanged.
+    const recentsPath = path.join(dataDirectory, "recents.json");
+    const readRecentsFile = async () => {
+      try {
+        const data = JSON.parse(await fs.readFile(recentsPath, "utf8"));
+        return Array.isArray(data?.projects) ? data.projects : null;
+      } catch {
+        return null;
+      }
+    };
     const trimLimit = Date.now() + 8000;
     let trimmed;
+    let stored;
     do {
       trimmed = await recents.list();
-      if (trimmed.length <= 3) break;
+      stored = await readRecentsFile();
+      if (trimmed.length <= 3 && stored && stored.length <= 3) break;
       await sleep(50);
     } while (Date.now() < trimLimit);
     assert.equal(
@@ -1524,6 +1536,13 @@ app
         " entries after 8s: " +
         trimmed.map((entry) => entry.name).join(", ") +
         ")",
+    );
+    assert.equal(
+      stored !== null && stored.length <= 3,
+      true,
+      "new cap trims the persisted recents.json (file holds " +
+        (stored ? stored.length : "no readable") +
+        " projects after 8s)",
     );
     await page(() =>
       document.querySelector('#settingsDialog .close-dialog').click(),
