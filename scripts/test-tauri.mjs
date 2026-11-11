@@ -221,9 +221,35 @@ try {
       const entry = pending.get(data.id);
       if (!entry) return;
       pending.delete(data.id);
-      if (data.error) rejectChecks(new Error(`CDP ${data.error.message}`));
+      // Reject the individual command, not the whole run: the caller decides
+      // whether the error is fatal or retryable (see evaluateStable).
+      if (data.error) entry.reject(new Error(`CDP ${data.error.message}`));
       else entry.resolve(data.result);
     });
+    // The webview navigates from the transient blank page to the app's
+    // tauri.localhost document; an evaluate issued mid-navigation gets
+    // "Execution context was destroyed". Retry on the freshly created
+    // execution context instead of failing the smoke run on the race.
+    const evaluateStable = async (name, expression) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const { result } = await send("Runtime.evaluate", {
+            expression,
+            awaitPromise: true,
+            returnByValue: true,
+          });
+          return result?.value ?? result?.description ?? null;
+        } catch (error) {
+          if (
+            attempt >= 40 ||
+            !/Execution context was destroyed/i.test(String(error.message))
+          ) {
+            throw error;
+          }
+          await sleep(250);
+        }
+      }
+    };
     ws.addEventListener("error", () =>
       rejectChecks(new Error("CDP WebSocket failed")),
     );
@@ -233,40 +259,32 @@ try {
         // data-ready="true" on <body> only after boot() completes. A false
         // result is an explicit failure, not a fallthrough into checks that
         // would fail with unrelated symptoms.
-        const ready = await send("Runtime.evaluate", {
-          expression: `(async () => {
+        const ready = await evaluateStable("ready", `(async () => {
             for (let i = 0; i < 200; i++) {
               if (document.body?.dataset?.ready === "true") return true;
               await new Promise((r) => setTimeout(r, 100));
             }
             return false;
-          })()`,
-          awaitPromise: true,
-          returnByValue: true,
-        });
-        if (ready?.result?.value !== true) {
-          const stage = await send("Runtime.evaluate", {
-            expression: "String(document.body?.dataset?.stage ?? null)",
-            returnByValue: true,
-          });
+          })()`);
+        if (ready !== true) {
+          const stage = await evaluateStable(
+            "stage",
+            "String(document.body?.dataset?.stage ?? null)",
+          );
           ws.close();
           rejectChecks(
             new Error(
               "renderer never signaled readiness: body[data-ready] did not " +
-                `become "true" within 20s (stage=${stage?.result?.value})`,
+                `become "true" within 20s (stage=${stage})`,
             ),
           );
           return;
         }
         const results = {};
-        const evaluate = async (name, expression) => {
-          const { result } = await send("Runtime.evaluate", {
-            expression,
-            awaitPromise: true,
-            returnByValue: true,
-          });
-          results[name] = result?.value ?? result?.description ?? null;
-        };
+        const evaluate = (name, expression) =>
+          evaluateStable(name, expression).then(
+            (value) => (results[name] = value),
+          );
         await evaluate("title", "document.title");
         await evaluate("stage", "document.body.dataset.stage");
         await evaluate("probe", "document.documentElement.dataset.tauri");
