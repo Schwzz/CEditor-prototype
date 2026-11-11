@@ -86,13 +86,37 @@ jobs:
           # Microsoft Edge WebView2 Runtime (desktop Windows has it in-box;
           # Server does not). Without it the Tauri app starts, fails to
           # create its webview, and silently hangs alive with no window and
-          # no CDP endpoint - which is exactly how the smoke test used to
-          # fail ("CDP endpoint never became reachable"). Install the
-          # Evergreen runtime before launching the app.
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?link=2099617" -OutFile "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
-          $proc = Start-Process -FilePath "$env:TEMP\MicrosoftEdgeWebview2Setup.exe" -ArgumentList "/silent","/install" -Wait -PassThru
+          # no CDP endpoint - which is how the smoke test first failed
+          # ("CDP endpoint never became reachable").
+          #
+          # The Evergreen STANDALONE installer is used because the old
+          # bootstrapper fwlinks (link=2099617 and similar) are retired:
+          # go.microsoft.com now 302s them to Bing, so the "installer"
+          # arrived as a ~200 KB HTML page and CreateProcess refused to run
+          # it ("file or directory is corrupted and unreadable").
+          # linkid=2124701 is the live Microsoft fwlink for the x64
+          # standalone installer (~205 MB, Authenticode-signed), verified
+          # by MZ-header + signature checks before use.
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $installer = Join-Path $env:TEMP 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2124701" -OutFile $installer
+          # Verify the download is a plausible Windows executable before
+          # running it: present, reasonable size, MZ PE signature.
+          if (!(Test-Path $installer)) { throw "Installer download failed: $installer not found." }
+          $size = (Get-Item $installer).Length
+          if ($size -lt 10MB) { throw "Installer looks wrong: only $size bytes (expected ~205 MB); refusing to run it." }
+          $mz = [System.IO.File]::ReadAllBytes($installer)[0..1]
+          if ($mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) { throw "Installer is not a Windows executable (first bytes: $($mz[0]),$($mz[1]); expected MZ = 77,90)." }
+          "Installer verified: $([math]::Round($size/1MB,1)) MB, valid PE header."
+          # Explicit working directory: the inherited repo checkout
+          # directory is reported in the runner's Start-Process error and
+          # must never be a factor in launching the installer.
+          $proc = Start-Process -FilePath $installer -ArgumentList "/silent","/install" -Wait -PassThru -WorkingDirectory $env:TEMP
+          "Installer exit code: $($proc.ExitCode)"
           if ($proc.ExitCode -ne 0) { throw "WebView2 runtime installer failed with exit code $($proc.ExitCode)." }
-          $runtime = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+          $runtime = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue
+          if (!$runtime -or !$runtime.pv -or $runtime.pv -eq '0.0.0.0') { throw "WebView2 Runtime registry entry missing or invalid after installation." }
           "WebView2 Runtime installed: $($runtime.pv)"
       - name: Tauri smoke test (launch real app)
         run: npm run test:tauri

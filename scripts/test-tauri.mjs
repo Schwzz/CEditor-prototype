@@ -132,7 +132,11 @@ try {
       try {
         const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
         const targets = await res.json();
-        const page = targets.find((t) => t.type === "page");
+        // Wait for the app's real page, not the transient about:blank
+        // target that can exist before the Tauri webview navigates.
+        const page = targets.find(
+          (t) => t.type === "page" && /tauri/.test(t.url),
+        );
         if (page) return page;
       } catch {
         // WebView2 not listening yet; keep waiting.
@@ -163,7 +167,7 @@ try {
       const entry = pending.get(data.id);
       if (!entry) return;
       pending.delete(data.id);
-      if (data.error) reject(new Error(`CDP ${data.error.message}`));
+      if (data.error) rejectChecks(new Error(`CDP ${data.error.message}`));
       else entry.resolve(data.result);
     });
     ws.addEventListener("error", () =>
