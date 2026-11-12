@@ -1,45 +1,17 @@
 import { open, writeFile, rename, unlink, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { compile } from "../src/core/engine.mjs";
+import {
+  MAX_PROJECT_BYTES,
+  encodeProject,
+  decodeProject,
+} from "../src/core/project-format.mjs";
 
-export const MAX_PROJECT_BYTES = 1024 * 1024;
-export function encodeProject(value) {
-  if (
-    value?.format !== "framecode-project" ||
-    value.version !== 1 ||
-    typeof value.source !== "string" ||
-    typeof value.lastValid !== "string" ||
-    value.source.length > 50000
-  )
-    throw new Error("Unsupported or invalid Framecode project.");
-  compile(value.lastValid);
-  const text =
-    JSON.stringify(
-      {
-        format: value.format,
-        version: 1,
-        source: value.source,
-        lastValid: value.lastValid,
-      },
-      null,
-      2,
-    ) + "\n";
-  if (Buffer.byteLength(text) > MAX_PROJECT_BYTES)
-    throw new Error("Project is too large (maximum 1 MiB).");
-  return text;
-}
-export function decodeProject(text) {
-  if (typeof text !== "string" || Buffer.byteLength(text) > MAX_PROJECT_BYTES)
-    throw new Error("Project is too large (maximum 1 MiB).");
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("This is not a valid JSON project.");
-  }
-  return JSON.parse(encodeProject(value));
-}
+// The pure validation lives in src/core/project-format.mjs so the Tauri
+// bridge can reuse it verbatim in the renderer; this module keeps only the
+// filesystem-aware parts of the Electron implementation. Both exports stay
+// re-exported so the Electron tests and imports are unchanged.
+export { MAX_PROJECT_BYTES, encodeProject, decodeProject } from "../src/core/project-format.mjs";
 async function boundedRead(path) {
   const file = await open(path, "r");
   try {
