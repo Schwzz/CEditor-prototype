@@ -137,7 +137,7 @@ impl AppSettings {
             Err(_) => Settings::defaults(),
             Ok(value) => {
                 let ok = value.get("format").and_then(Value::as_str) == Some(SETTINGS_FORMAT)
-                    && value.get("version").and_then(Value::as_u64) == Some(1);
+                    && crate::project_files::version_is_one(value.get("version"));
                 if ok {
                     Settings::normalize(value.get("settings").unwrap_or(&Value::Null))
                 } else {
@@ -330,6 +330,38 @@ mod tests {
         assert!(loaded.recovery_copies, "bad entry falls back");
         assert_eq!(loaded.max_recents, 10, "out-of-range entry falls back");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn version_one_accepts_the_json_number_forms_and_rejects_the_rest() {
+        // JavaScript compares `data.version !== 1`, so JSON `1` and `1.0`
+        // are the same number and both load; strings, booleans, and other
+        // numbers are foreign and fall back to defaults.
+        let max_recents_for = |version: Value| {
+            let dir = unique_dir("version");
+            fs::write(
+                dir.join("settings.json"),
+                json!({
+                    "format": "framecode-settings",
+                    "version": version,
+                    "settings": {"maxRecents": 7},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let loaded = AppSettings::new(&dir).load().unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+            loaded.max_recents
+        };
+        assert_eq!(max_recents_for(json!(1)), 7);
+        assert_eq!(max_recents_for(json!(1.0)), 7);
+        assert_eq!(max_recents_for(json!("1")), 10, "string version: defaults");
+        assert_eq!(
+            max_recents_for(json!(true)),
+            10,
+            "boolean version: defaults"
+        );
+        assert_eq!(max_recents_for(json!(2)), 10, "other version: defaults");
     }
 
     #[test]

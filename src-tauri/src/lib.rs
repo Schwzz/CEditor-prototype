@@ -58,6 +58,11 @@ pub struct Persistence {
 
 impl Persistence {
     fn new(directory: PathBuf) -> Result<Persistence, String> {
+        // A fresh install has no app-data directory yet; every store below
+        // expects its directory to exist (settings load reads it, recents
+        // and recovery write into it), so create it up front.
+        std::fs::create_dir_all(&directory)
+            .map_err(|e| format!("Framecode could not create its data directory: {e}"))?;
         let mut app_settings = AppSettings::new(&directory);
         // A corrupt/missing settings file resolves to defaults here, so a
         // fresh window always boots with a valid, complete preference set.
@@ -235,6 +240,15 @@ mod tests {
         dir
     }
 
+    /// A path that does not exist yet, as on a fresh install.
+    fn missing_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("framecode-state-{name}-{nanos}"))
+    }
+
     #[test]
     fn persistence_boots_with_defaults_and_applies_the_recents_cap() {
         let dir = unique_dir("boot");
@@ -246,6 +260,48 @@ mod tests {
             assert_eq!(stores.recents.cap(), 4, "cap applies immediately");
         }
         assert!(dir.join("settings.json").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn persistence_initializes_and_writes_in_a_fresh_data_directory() {
+        // Regression: a fresh install has no app-data directory, and every
+        // store (settings read, recents and recovery writes) needs it.
+        let dir = missing_dir("fresh");
+        assert!(!dir.exists(), "the test directory must not pre-exist");
+        let state = Persistence::new(dir.clone()).unwrap();
+        assert!(dir.is_dir(), "initialization created the data directory");
+        {
+            let mut stores = state.inner.lock().unwrap();
+            stores
+                .settings
+                .set("timelineSnap", &json!(false))
+                .expect("settings write in a fresh directory");
+            stores
+                .recents
+                .add(&dir.join("Added.framecode.json").to_string_lossy(), "Added")
+                .expect("recents write in a fresh directory");
+            stores
+                .recovery
+                .write(&json!({
+                    "format": "framecode-project",
+                    "version": 1,
+                    "source": "composition(\"Demo\")",
+                    "lastValid": "composition(\"Demo\")",
+                }))
+                .expect("recovery write in a fresh directory");
+        }
+        assert!(dir.join("settings.json").exists());
+        assert!(dir.join("recents.json").exists());
+        assert!(dir.join("recovery.json").exists());
+        // Rebooting on the same directory reads the persisted values back.
+        let reloaded = Persistence::new(dir.clone()).unwrap();
+        {
+            let stores = reloaded.inner.lock().unwrap();
+            assert!(!stores.settings.all().timeline_snap);
+            assert_eq!(stores.recents.list().unwrap()[0].entry.name, "Added");
+            assert!(stores.recovery.read().unwrap().is_some());
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 }

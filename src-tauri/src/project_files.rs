@@ -67,6 +67,13 @@ struct CanonicalProject<'a> {
     last_valid: &'a str,
 }
 
+/// Mirrors the JavaScript `data.version !== 1` check: JSON `1` and `1.0`
+/// are the same JS number, so both are accepted, while strings, booleans,
+/// and other version numbers are rejected.
+pub fn version_is_one(value: Option<&Value>) -> bool {
+    matches!(value, Some(Value::Number(n)) if n.as_f64() == Some(1.0))
+}
+
 /// Structural validation mirroring the Electron encoder. Compilation of
 /// `lastValid` is NOT performed here; the JavaScript engine owns that.
 pub fn validate_project(value: &Value) -> Result<ProjectData> {
@@ -79,9 +86,7 @@ pub fn validate_project(value: &Value) -> Result<ProjectData> {
     }
     // JavaScript compares `value.version !== 1`, so the JSON number 1 (or
     // 1.0) passes while strings, booleans and other versions fail.
-    let version_ok = matches!(&object.get("version"), Some(Value::Number(n))
-        if n.as_f64() == Some(1.0));
-    if !version_ok {
+    if !version_is_one(object.get("version")) {
         return error("Unsupported or invalid Framecode project.");
     }
     let source = object

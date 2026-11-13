@@ -149,7 +149,7 @@ impl RecentProjects {
             Ok(data) => data,
         };
         if data.get("format").and_then(Value::as_str) != Some(RECENTS_FORMAT)
-            || data.get("version").and_then(Value::as_u64) != Some(1)
+            || !crate::project_files::version_is_one(data.get("version"))
         {
             return Vec::new();
         }
@@ -408,6 +408,41 @@ mod tests {
         recents.add(&absolute(&a), "A.framecode.json").unwrap();
         assert_eq!(RecentProjects::new(&dir).list().unwrap().len(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn version_one_accepts_the_json_number_forms_and_rejects_the_rest() {
+        // JavaScript compares `data.version !== 1`, so JSON `1` and `1.0`
+        // are the same number and both load; strings, booleans, and other
+        // numbers are foreign and yield an empty list.
+        let entry = |version: Value| {
+            let dir = unique_dir("version");
+            let path = touch(&dir, "A.framecode.json");
+            fs::write(
+                dir.join("recents.json"),
+                json!({
+                    "format": "framecode-recents",
+                    "version": version,
+                    "projects": [
+                        {"path": absolute(&path), "name": "A.framecode.json", "openedAt": 5},
+                    ],
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let list = RecentProjects::new(&dir).list().unwrap();
+            let names = list
+                .iter()
+                .map(|e| e.entry.name.clone())
+                .collect::<Vec<_>>();
+            fs::remove_dir_all(&dir).unwrap();
+            names
+        };
+        assert_eq!(entry(json!(1)), vec!["A.framecode.json"]);
+        assert_eq!(entry(json!(1.0)), vec!["A.framecode.json"]);
+        assert!(entry(json!("1")).is_empty());
+        assert!(entry(json!(true)).is_empty());
+        assert!(entry(json!(2)).is_empty());
     }
 
     #[test]

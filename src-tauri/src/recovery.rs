@@ -105,7 +105,7 @@ impl RecoveryStore {
         let data: Value = serde_json::from_str(&text)
             .map_err(|_| PersistenceError("This is not a valid JSON project.".into()))?;
         if data.get("format").and_then(Value::as_str) != Some(RECOVERY_FORMAT)
-            || data.get("version").and_then(Value::as_u64) != Some(1)
+            || !crate::project_files::version_is_one(data.get("version"))
         {
             return Err(PersistenceError("Unsupported recovery file.".into()));
         }
@@ -195,6 +195,44 @@ mod tests {
         recovery.write(&project()).unwrap();
         assert!(recovery.read().unwrap().is_some());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn version_one_accepts_the_json_number_forms_and_rejects_the_rest() {
+        // JavaScript compares `data.version !== 1`, so JSON `1` and `1.0`
+        // are the same number and both load; strings, booleans, and other
+        // numbers are foreign and rejected.
+        let read_with = |version: Value| {
+            let dir = unique_dir("version");
+            fs::write(
+                dir.join("recovery.json"),
+                json!({
+                    "format": "framecode-recovery",
+                    "version": version,
+                    "project": project(),
+                    "updatedAt": 1,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let result = RecoveryStore::new(&dir).read();
+            fs::remove_dir_all(&dir).unwrap();
+            result
+        };
+        assert!(read_with(json!(1)).unwrap().is_some());
+        assert!(read_with(json!(1.0)).unwrap().is_some());
+        assert_eq!(
+            read_with(json!("1")).err().unwrap().to_string(),
+            "Unsupported recovery file."
+        );
+        assert_eq!(
+            read_with(json!(true)).err().unwrap().to_string(),
+            "Unsupported recovery file."
+        );
+        assert_eq!(
+            read_with(json!(2)).err().unwrap().to_string(),
+            "Unsupported recovery file."
+        );
     }
 
     #[test]
