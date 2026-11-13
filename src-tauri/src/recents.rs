@@ -242,6 +242,9 @@ impl RecentProjects {
 
     /// Removes only the recents entry; the project file itself is untouched.
     pub fn remove(&mut self, file_path: &str) -> Result<Vec<RecentEntry>> {
+        if !js_is_absolute(file_path) {
+            return error("Invalid recent project.");
+        }
         let normalized = normalize_recent_path(file_path)
             .ok_or_else(|| PersistenceError("Invalid recent project.".into()))?;
         let kept: Vec<RecentEntry> = self
@@ -440,6 +443,23 @@ mod tests {
         assert!(recents.add("not-absolute", "x").is_err());
         assert!(recents.add(&absolute(&dir.join("X.json")), "  ").is_err());
         assert!(recents.remove("").is_err());
+        // Mirrors Electron recents.remove: a relative path is rejected with
+        // "Invalid recent project." instead of being silently resolved
+        // against the working directory, and nothing is removed.
+        let error = recents
+            .remove("relative/path.framecode.json")
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "Invalid recent project.");
+        assert_eq!(
+            recents
+                .list()
+                .unwrap()
+                .iter()
+                .map(|e| e.entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Good", "NoStamp"]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
