@@ -1,21 +1,27 @@
-// Stage 1.5 of the Tauri migration: a truthful desktop adapter for the
+// Stage 2 of the Tauri migration: a truthful desktop adapter for the
 // existing frontend. Electron's preload (desktop/preload.cjs) installs
 // window.framecodeDesktop; this module installs an equivalent adapter only
 // inside the Tauri webview (window.__TAURI__), so the editor boots without
 // @conda changing the Electron path at all.
 //
 // Truthfulness policy:
-// - Methods already implemented by the Tauri shell are bridged for real
-//   (appInfo -> the desktop_info Rust command; clipboard -> the WebView's
-//   navigator.clipboard).
-// - Methods whose desktop features are not migrated yet (persistence,
-//   dialogs, menus, recovery, recents) deliberately return rejected
+// - Methods already implemented by the Tauri shell are bridged for real:
+//   appInfo -> the desktop_info Rust command; clipboard -> the WebView's
+//   navigator.clipboard; and since Stage 2 the persistence operations
+//   (settings, recents, recovery) -> their Rust commands in src-tauri.
+//   Recovery write/read validate through the shared JavaScript core format
+//   module (src/core/project-format.mjs) first, so the composition engine
+//   still performs the semantic validation the Electron main process did.
+// - Methods whose desktop features are not migrated yet (dialogs, menus,
+//   window controls, asset authorization) deliberately return rejected
 //   promises with explicit messages. The renderer's boot paths already
 //   handle failures defensively (safe defaults + honest toasts), so the
 //   truthful rejection keeps the app alive while never pretending a file
 //   operation succeeded.
 // - onCommand returns a working unsubscribe; nothing fires because the
-//   Tauri shell has no native menus yet (Stage 2).
+//   Tauri shell has no native menus yet (a later stage).
+
+import { encodeProject, decodeProject } from "../core/project-format.mjs";
 
 const NOT_IMPLEMENTED = "is not implemented in the Tauri shell yet";
 
@@ -69,25 +75,47 @@ export function createTauriDesktopBridge({
       return () => {};
     },
 
-    // Not migrated yet (Stage 2+): reject explicitly instead of faking
+    // Persistence bridged for real since Stage 2: each call invokes the
+    // corresponding Rust command (src-tauri/src/lib.rs). The renderer's
+    // window.framecodeDesktop contract is unchanged from Electron.
+    listRecents: () => invoke("recents_list"),
+    removeRecent: (recentPath) => invoke("recents_remove", { path: recentPath }),
+    getSettings: () => invoke("settings_get"),
+    setSetting: (key, value) => invoke("settings_set", { key, value }),
+    resetSettings: () => invoke("settings_reset"),
+
+    // Recovery validation keeps its home in the JavaScript engine: the
+    // canonical encoder compiles `lastValid`, exactly like the Electron
+    // main process did before persisting a recovery copy.
+    writeRecovery: (project) => {
+      let valid;
+      try {
+        valid = decodeProject(encodeProject(project));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return invoke("recovery_write", { project: valid });
+    },
+    // Reading re-validates the same way, so a recovery file whose draft no
+    // longer compiles is reported as unusable, never restored broken.
+    readRecovery: async () => {
+      const recovery = await invoke("recovery_read");
+      if (recovery === null || recovery === undefined) return null;
+      return decodeProject(encodeProject(recovery));
+    },
+    clearRecovery: () => invoke("recovery_clear"),
+
+    // Not migrated yet (later stages): reject explicitly instead of faking
     // success. The renderer treats these rejections exactly like any other
     // desktop-bridge failure.
     openProject: unsupported("openProject"),
     openRecentProject: unsupported("openRecentProject"),
-    listRecents: unsupported("listRecents"),
-    removeRecent: unsupported("removeRecent"),
-    getSettings: unsupported("getSettings"),
-    setSetting: unsupported("setSetting"),
-    resetSettings: unsupported("resetSettings"),
     saveProject: unsupported("saveProject"),
     newProject: unsupported("newProject"),
     confirmUnsaved: unsupported("confirmUnsaved"),
     setDirty: unsupported("setDirty"),
     setStage: unsupported("setStage"),
     setCodePanel: unsupported("setCodePanel"),
-    readRecovery: unsupported("readRecovery"),
-    writeRecovery: unsupported("writeRecovery"),
-    clearRecovery: unsupported("clearRecovery"),
     relinkRecoveryAssets: unsupported("relinkRecoveryAssets"),
     importImage: unsupported("importImage"),
     editClipboard: unsupported("editClipboard"),
