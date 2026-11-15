@@ -788,6 +788,7 @@ dependencies = [
 name = "framecode"
 version = "0.3.0"
 dependencies = [
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",
