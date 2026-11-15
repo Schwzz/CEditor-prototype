@@ -45,6 +45,12 @@ impl fmt::Display for PersistenceError {
 
 impl std::error::Error for PersistenceError {}
 
+impl From<String> for PersistenceError {
+    fn from(message: String) -> Self {
+        PersistenceError(message)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, PersistenceError>;
 
 fn error<T>(message: impl Into<String>) -> Result<T> {

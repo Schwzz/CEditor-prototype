@@ -39,10 +39,6 @@ const PRELOAD_VALUE_KEYS = [
 ];
 
 const NOT_YET = [
-  "openProject",
-  "openRecentProject",
-  "saveProject",
-  "newProject",
   "confirmUnsaved",
   "setDirty",
   "setStage",
@@ -168,6 +164,69 @@ test("recents methods invoke the real Rust commands", async () => {
     command: "recents_remove",
     args: { path: "C:\\a\\b.json" },
   });
+});
+
+const validProject = {
+  format: "framecode-project",
+  version: 1,
+  source: "composition(\"Demo\").duration(5)",
+  lastValid: "composition(\"Demo\").duration(5)",
+};
+
+test("file operations invoke the real Stage 3 Rust commands", async () => {
+  const b = bridge();
+  assert.deepEqual(await b.openProject(), {
+    command: "project_open_dialog",
+    args: undefined,
+  });
+  assert.deepEqual(await b.openRecentProject("C:\\a\\b.json"), {
+    command: "project_open_recent",
+    args: { path: "C:\\a\\b.json" },
+  });
+  assert.deepEqual(await b.newProject(), {
+    command: "project_new",
+    args: undefined,
+  });
+  assert.deepEqual(await b.saveProject(validProject, true), {
+    command: "project_save",
+    args: { project: validProject, saveAs: true },
+  });
+  // The Electron preload defaults saveAs to false.
+  assert.deepEqual(await b.saveProject(validProject), {
+    command: "project_save",
+    args: { project: validProject, saveAs: false },
+  });
+});
+
+test("saveProject validates through the shared core format before invoking", async () => {
+  let calls = 0;
+  const b = bridge(async (command, args) => {
+    calls++;
+    return { command, args };
+  });
+  // Electron's main process encodes the draft before opening the dialog;
+  // the adapter must not hand the Rust command an unvalidated draft.
+  const result = await b.saveProject(validProject, false);
+  assert.equal(result.command, "project_save");
+  assert.deepEqual(result.args.project, validProject);
+  assert.equal(calls, 1);
+});
+
+test("saveProject rejects invalid drafts without invoking Rust", async () => {
+  let calls = 0;
+  const b = bridge(async () => {
+    calls++;
+    return {};
+  });
+  for (const invalid of [
+    null,
+    { ...validProject, version: 2 },
+    { ...validProject, lastValid: "broken(" },
+    { ...validProject, source: "x".repeat(50001) },
+  ]) {
+    await assert.rejects(b.saveProject(invalid, false));
+  }
+  assert.equal(calls, 0, "invalid drafts never reach the Rust command");
 });
 
 test("clearRecovery invokes the real Rust command", async () => {
