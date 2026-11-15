@@ -16,7 +16,13 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, openSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -50,6 +56,31 @@ if (!runtimeVersion) {
   process.exit(1);
 }
 console.log(`WebView2 Runtime: ${runtimeVersion}`);
+
+// Stage 3 smoke fixture: a real project file on disk so the file-operation
+// commands can be exercised end to end (Open Recent -> Save -> recents).
+// Native dialogs cannot be driven by an automated test, so the dialog-free
+// paths are what the smoke test covers; the dialog wrappers are exercised
+// by the Rust unit tests with fixture dialogs, like the Electron suite.
+const fixturePath = join(
+  tmpdir(),
+  `framecode-stage3-smoke-${process.pid}.framecode.json`,
+);
+const fixtureSource = 'composition("Stage3Smoke").duration(5)';
+const savedSource = 'composition("Stage3Smoke").duration(7)';
+writeFileSync(
+  fixturePath,
+  JSON.stringify(
+    {
+      format: "framecode-project",
+      version: 1,
+      source: fixtureSource,
+      lastValid: fixtureSource,
+    },
+    null,
+    2,
+  ) + "\n",
+);
 
 const exePath =
   process.env.FRAMECODE_TAURI_EXE ??
@@ -342,6 +373,47 @@ try {
             }
           })()`,
         );
+        // Stage 3 file operations, end to end through the Rust commands:
+        // New clears the session path, Open Recent loads the fixture and
+        // records it, Save writes it back through the current path (no
+        // dialog), and the recents list reflects both — then the entry is
+        // removed again so the run leaves the app data as it found it.
+        await evaluate(
+          "fileOps",
+          `(async () => {
+            const invoke = window.__TAURI__.core.invoke;
+            const fixture = ${JSON.stringify(fixturePath)};
+            const steps = {};
+            try {
+              steps.newProject = await invoke("project_new");
+              const loaded = await invoke("project_open_recent", { path: fixture });
+              steps.loaded = {
+                name: loaded?.name,
+                path: loaded?.path,
+                format: loaded?.project?.format,
+                source: loaded?.project?.source,
+              };
+              const next = {
+                ...loaded.project,
+                source: ${JSON.stringify(savedSource)},
+                lastValid: ${JSON.stringify(savedSource)},
+              };
+              steps.saved = await invoke("project_save", {
+                project: next,
+                saveAs: false,
+              });
+              const before = await window.framecodeDesktop.listRecents();
+              steps.recentsBefore = before.filter((r) => r.path === fixture).length;
+              const removed = await window.framecodeDesktop.removeRecent(fixture);
+              steps.remaining = removed.filter((r) => r.path === fixture).length;
+              const after = await window.framecodeDesktop.listRecents();
+              steps.recentsAfter = after.filter((r) => r.path === fixture).length;
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            return JSON.stringify(steps);
+          })()`,
+        );
         ws.close();
         resolveChecks(results);
       } catch (error) {
@@ -399,6 +471,56 @@ try {
     `result=${checks.ipcRoundTrip}`,
   );
 
+  // Stage 3 file operations: the page returns a JSON step log; every step
+  // must have happened, and the saved file must hold what Save wrote.
+  let fileOps = null;
+  try {
+    fileOps = JSON.parse(checks.fileOps ?? "null");
+  } catch {
+    // A missing/unparsable step log is reported as the failure below.
+  }
+  expect("file operations ran without errors", !!fileOps && !fileOps.error, `steps=${checks.fileOps}`);
+  if (fileOps && !fileOps.error) {
+    expect(
+      "project_new reports the Untitled name",
+      fileOps.newProject?.name === "Untitled.framecode.json",
+      `newProject=${JSON.stringify(fileOps.newProject)}`,
+    );
+    expect(
+      "project_open_recent loads the fixture project",
+      fileOps.loaded?.format === "framecode-project" &&
+        fileOps.loaded?.path === fixturePath &&
+        fileOps.loaded?.source === fixtureSource,
+      `loaded=${JSON.stringify(fileOps.loaded)}`,
+    );
+    expect(
+      "project_save writes through the session's current path",
+      fileOps.saved?.path === fixturePath,
+      `saved=${JSON.stringify(fileOps.saved)}`,
+    );
+    let savedSourceOnDisk = null;
+    try {
+      savedSourceOnDisk = JSON.parse(readFileSync(fixturePath, "utf8")).source;
+    } catch {
+      // Reported as the failure below.
+    }
+    expect(
+      "saved file holds the Save payload",
+      savedSourceOnDisk === savedSource,
+      `onDisk=${JSON.stringify(savedSourceOnDisk)}`,
+    );
+    expect(
+      "Open Recent recorded the fixture in recents",
+      fileOps.recentsBefore === 1,
+      `recentsBefore=${JSON.stringify(fileOps.recentsBefore)}`,
+    );
+    expect(
+      "removeRecent removed the fixture entry",
+      fileOps.remaining === 0 && fileOps.recentsAfter === 0,
+      `remaining=${JSON.stringify(fileOps.remaining)}, recentsAfter=${JSON.stringify(fileOps.recentsAfter)}`,
+    );
+  }
+
   if (failures.length) {
     exitCode = 1;
     console.error("TAURI SMOKE FAIL: " + failures.length + " check(s) failed");
@@ -412,5 +534,11 @@ try {
   // Kill the whole process tree (Tauri spawns WebView2 helper processes).
   spawn("taskkill", ["/PID", String(app.pid), "/T", "/F"]);
   await sleep(1000);
+  // The Stage 3 fixture is only smoke-test scaffolding.
+  try {
+    unlinkSync(fixturePath);
+  } catch {
+    // Nothing to clean up when the save step never happened.
+  }
   process.exit(exitCode);
 }

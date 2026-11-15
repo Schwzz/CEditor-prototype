@@ -1,19 +1,23 @@
-// Stage 2 of the Tauri migration: a truthful desktop adapter for the
+// Stage 3 of the Tauri migration: a truthful desktop adapter for the
 // existing frontend. Electron's preload (desktop/preload.cjs) installs
 // window.framecodeDesktop; this module installs an equivalent adapter only
 // inside the Tauri webview (window.__TAURI__), so the editor boots without
-// @conda changing the Electron path at all.
+// changing the Electron path at all.
 //
 // Truthfulness policy:
 // - Methods already implemented by the Tauri shell are bridged for real:
 //   appInfo -> the desktop_info Rust command; clipboard -> the WebView's
-//   navigator.clipboard; and since Stage 2 the persistence operations
-//   (settings, recents, recovery) -> their Rust commands in src-tauri.
-//   Recovery write/read validate through the shared JavaScript core format
-//   module (src/core/project-format.mjs) first, so the composition engine
-//   still performs the semantic validation the Electron main process did.
-// - Methods whose desktop features are not migrated yet (dialogs, menus,
-//   window controls, asset authorization) deliberately return rejected
+//   navigator.clipboard; persistence (settings, recents, recovery) ->
+//   their Rust commands since Stage 2; and since Stage 3 the file
+//   operations (Open dialog, Open Recent, New, Save, Save As) -> their
+//   Rust commands in src-tauri/src/file_operations.rs, including the
+//   native Open/Save dialogs. Recovery write/read and save validate
+//   through the shared JavaScript core format module
+//   (src/core/project-format.mjs) first, so the composition engine still
+//   performs the semantic validation the Electron main process did.
+// - Methods whose desktop features are not migrated yet (native menus,
+//   window controls, image import and asset authorization, recovery
+//   relinking, clipboard edit commands) deliberately return rejected
 //   promises with explicit messages. The renderer's boot paths already
 //   handle failures defensively (safe defaults + honest toasts), so the
 //   truthful rejection keeps the app alive while never pretending a file
@@ -75,6 +79,28 @@ export function createTauriDesktopBridge({
       return () => {};
     },
 
+    // File operations bridged for real since Stage 3 (the Rust commands
+    // mirror the Electron `project:open`, `project:open-recent`,
+    // `project:save`, and `project:new` handlers, including the native
+    // Open/Save dialogs and the recents recording):
+    openProject: () => invoke("project_open_dialog"),
+    openRecentProject: (recentPath) =>
+      invoke("project_open_recent", { path: recentPath }),
+    newProject: () => invoke("project_new"),
+
+    // Save validates through the shared core format first, exactly like
+    // the Electron main process's encodeProject before any dialog opens;
+    // an invalid draft rejects without reaching Rust.
+    saveProject: (project, saveAs = false) => {
+      let valid;
+      try {
+        valid = decodeProject(encodeProject(project));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return invoke("project_save", { project: valid, saveAs: !!saveAs });
+    },
+
     // Persistence bridged for real since Stage 2: each call invokes the
     // corresponding Rust command (src-tauri/src/lib.rs). The renderer's
     // window.framecodeDesktop contract is unchanged from Electron.
@@ -108,10 +134,6 @@ export function createTauriDesktopBridge({
     // Not migrated yet (later stages): reject explicitly instead of faking
     // success. The renderer treats these rejections exactly like any other
     // desktop-bridge failure.
-    openProject: unsupported("openProject"),
-    openRecentProject: unsupported("openRecentProject"),
-    saveProject: unsupported("saveProject"),
-    newProject: unsupported("newProject"),
     confirmUnsaved: unsupported("confirmUnsaved"),
     setDirty: unsupported("setDirty"),
     setStage: unsupported("setStage"),

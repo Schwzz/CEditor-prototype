@@ -48,7 +48,8 @@ fn error<T>(message: impl Into<String>) -> Result<T> {
 
 /// Mirrors the JavaScript `path.isAbsolute` on Windows, where a leading
 /// separator alone counts as absolute (Rust's `Path::is_absolute` does not).
-fn js_is_absolute(path: &str) -> bool {
+/// Shared with the Stage 3 file operations (open-recent validation).
+pub(crate) fn js_is_absolute(path: &str) -> bool {
     if cfg!(windows) {
         path.starts_with('/') || path.starts_with('\\') || Path::new(path).is_absolute()
     } else {

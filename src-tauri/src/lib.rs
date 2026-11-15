@@ -1,16 +1,19 @@
 //! Framecode's Tauri backend.
 //!
-//! Stage 2 of the Tauri migration: persistence (project files, settings,
-//! recents, recovery) lives here, ported from the Electron main process
-//! with identical on-disk formats and validation. Native dialogs, menus,
-//! clipboard wiring, window controls, and the close handshake belong to
-//! later stages and are deliberately absent.
+//! Stage 3 of the Tauri migration: file operations (Open dialog, Open
+//! Recent, New, Save, Save As) joined the Stage 2 persistence backend
+//! (project files, settings, recents, recovery), all ported from the
+//! Electron main process with identical on-disk formats and validation.
+//! Native menus, window controls, the close handshake, image import, and
+//! asset authorization belong to later stages and are deliberately absent.
 
+mod file_operations;
 mod project_files;
 mod recents;
 mod recovery;
 mod settings;
 
+use file_operations::{FileOperations, LoadedProject, NewProject, SavedProject, TauriDialogs};
 use recents::RecentProjects;
 use recovery::RecoveryStore;
 use serde::Serialize;
@@ -191,6 +194,81 @@ fn project_write(path: String, project: Value) -> CommandResult<()> {
     project_files::write_project(std::path::Path::new(&path), &project).map_err(|e| e.to_string())
 }
 
+/// The Electron `project:open` handler: the Open dialog picks a `.json`
+/// project, it is read and recorded in recents, and the session adopts it
+/// as the current document path. Canceling the dialog returns `None`.
+#[tauri::command]
+fn project_open_dialog(
+    app: tauri::AppHandle,
+    state: tauri::State<Persistence>,
+    files: tauri::State<FileOperations>,
+) -> CommandResult<Option<LoadedProject>> {
+    let dialogs = TauriDialogs::new(app);
+    files
+        .run_exclusive(|| {
+            with_stores(&state, |stores| {
+                file_operations::open_project_dialog(&files, &mut stores.recents, &dialogs)
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The Electron `project:open-recent` handler: the same trusted pipeline as
+/// the Open dialog, with the path supplied by the persisted recents list.
+#[tauri::command]
+fn project_open_recent(
+    state: tauri::State<Persistence>,
+    files: tauri::State<FileOperations>,
+    path: String,
+) -> CommandResult<LoadedProject> {
+    files
+        .run_exclusive(|| {
+            with_stores(&state, |stores| {
+                file_operations::open_recent_file(&files, &mut stores.recents, &path)
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The Electron `project:save` handler: Save writes to the session's
+/// current path without a dialog; Save As (or a pathless session) asks
+/// through the Save dialog, whose destination gains the ".framecode.json"
+/// suffix when it lacks one. A canceled dialog returns `None` and the
+/// session keeps its previous path.
+#[tauri::command]
+fn project_save(
+    app: tauri::AppHandle,
+    state: tauri::State<Persistence>,
+    files: tauri::State<FileOperations>,
+    project: Value,
+    save_as: bool,
+) -> CommandResult<Option<SavedProject>> {
+    let dialogs = TauriDialogs::new(app);
+    files
+        .run_exclusive(|| {
+            with_stores(&state, |stores| {
+                file_operations::save_project(
+                    &files,
+                    &mut stores.recents,
+                    &project,
+                    save_as,
+                    &dialogs,
+                )
+                .map_err(|e| e.to_string())
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The Electron `project:new` handler: the session forgets its current
+/// document path and reports the Untitled document name.
+#[tauri::command]
+fn project_new(files: tauri::State<FileOperations>) -> NewProject {
+    file_operations::new_project(&files)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -205,7 +283,12 @@ pub fn run() {
             recovery_clear,
             project_read,
             project_write,
+            project_open_dialog,
+            project_open_recent,
+            project_save,
+            project_new,
         ])
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // The data directory mirrors Electron's app.getPath("userData")
             // role: all persistence files live under the OS app-data
@@ -217,6 +300,7 @@ pub fn run() {
             let persistence = Persistence::new(directory)
                 .map_err(|e| format!("Framecode could not start its persistence store: {e}"))?;
             app.manage(persistence);
+            app.manage(FileOperations::new());
             Ok(())
         })
         .run(tauri::generate_context!())
