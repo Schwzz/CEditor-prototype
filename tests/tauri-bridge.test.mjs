@@ -43,8 +43,6 @@ const NOT_YET = [
   "setDirty",
   "setStage",
   "setCodePanel",
-  "relinkRecoveryAssets",
-  "importImage",
   "editClipboard",
   "finishClose",
 ];
@@ -61,7 +59,13 @@ const BRIDGED = [
   "clearRecovery",
 ];
 
-const bridge = (invoke) =>
+// Stage 4: the asset commands join the bridged surface.
+const BRIDGED_ASSET_COMMANDS = [
+  ["importImage", "image_import_dialog", undefined],
+  ["relinkRecoveryAssets", "relink_recovery_assets", undefined],
+];
+
+const bridge = (invoke, tokenHolder) =>
   createTauriDesktopBridge({
     invoke:
       invoke ??
@@ -71,6 +75,7 @@ const bridge = (invoke) =>
       writeText: async (text) => text,
     },
     platform: "win32",
+    tokenHolder,
   });
 
 test("adapter mirrors the entire Electron preload surface", () => {
@@ -232,6 +237,23 @@ test("saveProject rejects invalid drafts without invoking Rust", async () => {
 test("clearRecovery invokes the real Rust command", async () => {
   const b = bridge();
   assert.deepEqual(await b.clearRecovery(), { command: "recovery_clear", args: undefined });
+});
+
+test("stage 4 asset commands invoke the real Rust commands", async () => {
+  const b = bridge();
+  for (const [method, command] of BRIDGED_ASSET_COMMANDS) {
+    assert.deepEqual(await b[method](), { command, args: undefined });
+  }
+});
+
+test("assetToken reads the token holder and starts empty", async () => {
+  // Without a holder the getter still answers "" (the sync contract).
+  assert.equal(bridge().assetToken, "");
+  const holder = { current: "" };
+  const b = bridge(undefined, holder);
+  assert.equal(b.assetToken, "");
+  holder.current = "abc123";
+  assert.equal(b.assetToken, "abc123", "the getter is live, not cached");
 });
 
 test("writeRecovery validates through the shared core format before invoking", async () => {

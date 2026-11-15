@@ -16,13 +16,18 @@ export class ImageCache {
   #failed = new Set();
   #listeners = new Set();
 
-  // Same-origin asset URL (framecode://app/assets keeps the page origin, so
-  // drawn images never taint the preview canvas). Built identically by
-  // every cache API entry so keys match everywhere.
+  // Same-origin asset URL keeps drawn images same-origin with the page, so
+  // canvas pixel reads never taint. Under Electron the page origin is
+  // framecode://app (framecode://app/assets); under Tauri it is the
+  // overridden tauri protocol's origin (…/assets on the app origin).
+  // Built identically by every cache API entry so keys match everywhere.
   #url(source) {
     const token = window.framecodeDesktop?.assetToken || "";
+    const base = window.__TAURI__
+      ? location.origin + "/assets/?path="
+      : "framecode://app/assets/?path=";
     return (
-      "framecode://app/assets/?path=" +
+      base +
       encodeURIComponent(source) +
       (token ? "&token=" + token : "")
     );

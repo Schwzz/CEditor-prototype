@@ -1,4 +1,4 @@
-// Stage 3 of the Tauri migration: a truthful desktop adapter for the
+// Stage 4 of the Tauri migration: a truthful desktop adapter for the
 // existing frontend. Electron's preload (desktop/preload.cjs) installs
 // window.framecodeDesktop; this module installs an equivalent adapter only
 // inside the Tauri webview (window.__TAURI__), so the editor boots without
@@ -8,20 +8,24 @@
 // - Methods already implemented by the Tauri shell are bridged for real:
 //   appInfo -> the desktop_info Rust command; clipboard -> the WebView's
 //   navigator.clipboard; persistence (settings, recents, recovery) ->
-//   their Rust commands since Stage 2; and since Stage 3 the file
-//   operations (Open dialog, Open Recent, New, Save, Save As) -> their
-//   Rust commands in src-tauri/src/file_operations.rs, including the
-//   native Open/Save dialogs. Recovery write/read and save validate
-//   through the shared JavaScript core format module
+//   their Rust commands since Stage 2; the file operations (Open dialog,
+//   Open Recent, New, Save, Save As) -> their Rust commands since Stage 3;
+//   and since Stage 4 image import and recovery relinking -> the
+//   image_import_dialog / relink_recovery_assets Rust commands (the
+//   renderer never authorizes anything itself). Recovery write/read and
+//   save validate through the shared JavaScript core format module
 //   (src/core/project-format.mjs) first, so the composition engine still
 //   performs the semantic validation the Electron main process did.
+// - assetToken keeps the Electron preload's synchronous getter contract;
+//   the value is the webview's capability token, delivered asynchronously
+//   from the asset_token Rust command (the getter returns "" until it
+//   arrives, which the renderer already tolerates).
 // - Methods whose desktop features are not migrated yet (native menus,
-//   window controls, image import and asset authorization, recovery
-//   relinking, clipboard edit commands) deliberately return rejected
-//   promises with explicit messages. The renderer's boot paths already
-//   handle failures defensively (safe defaults + honest toasts), so the
-//   truthful rejection keeps the app alive while never pretending a file
-//   operation succeeded.
+//   window controls, the unsaved-change prompt, clipboard edit commands,
+//   the close handshake) deliberately return rejected promises with
+//   explicit messages. The renderer's boot paths already handle failures
+//   defensively (safe defaults + honest toasts), so the truthful rejection
+//   keeps the app alive while never pretending a file operation succeeded.
 // - onCommand returns a working unsubscribe; nothing fires because the
 //   Tauri shell has no native menus yet (a later stage).
 
@@ -33,6 +37,7 @@ export function createTauriDesktopBridge({
   invoke,
   clipboard,
   platform,
+  tokenHolder,
 }) {
   if (typeof invoke !== "function")
     throw new TypeError("createTauriDesktopBridge requires an invoke function");
@@ -48,12 +53,13 @@ export function createTauriDesktopBridge({
     // Mirrors Electron's process.platform value for the current OS.
     platform,
 
-    // Electron derives this from the load URL's token query parameter for
-    // framecode:// asset requests. The Tauri shell loads the same renderer
-    // over its own origin and has no token to mint; the renderer already
-    // tolerates an empty token (renderer.mjs uses `token ? ... : ""`).
+    // Stage 4: the webview's capability token for framecode asset URLs,
+    // delivered asynchronously from the asset_token Rust command into the
+    // token holder. The synchronous getter contract is unchanged from
+    // Electron: it reads whatever the holder currently holds, starting at
+    // "" (the renderer already tolerates an empty token).
     get assetToken() {
-      return "";
+      return tokenHolder?.current ?? "";
     },
 
     // Real clipboard access through the WebView2/Chromium API. Failures
@@ -131,6 +137,13 @@ export function createTauriDesktopBridge({
     },
     clearRecovery: () => invoke("recovery_clear"),
 
+    // Stage 4 asset features, bridged for real: image import runs the
+    // Import image dialog and authorizes in Rust (never in the renderer);
+    // recovery relinking re-reads the backend's own recovery file and
+    // asks the native consent dialog before granting anything.
+    importImage: () => invoke("image_import_dialog"),
+    relinkRecoveryAssets: () => invoke("relink_recovery_assets"),
+
     // Not migrated yet (later stages): reject explicitly instead of faking
     // success. The renderer treats these rejections exactly like any other
     // desktop-bridge failure.
@@ -138,8 +151,6 @@ export function createTauriDesktopBridge({
     setDirty: unsupported("setDirty"),
     setStage: unsupported("setStage"),
     setCodePanel: unsupported("setCodePanel"),
-    relinkRecoveryAssets: unsupported("relinkRecoveryAssets"),
-    importImage: unsupported("importImage"),
     editClipboard: unsupported("editClipboard"),
     finishClose: unsupported("finishClose"),
   });
@@ -179,11 +190,21 @@ if (
       );
     });
     window.__framecodeStartupErrors = startupErrors;
+    // The capability token arrives asynchronously (the sync getter keeps
+    // its contract and reads ""); a delivery failure leaves it empty, and
+    // the renderer's existing evict/retry paths cover late arrival.
+    const tokenHolder = { current: "" };
+    invoke("asset_token")
+      .then((token) => {
+        if (typeof token === "string") tokenHolder.current = token;
+      })
+      .catch(() => {});
     window.framecodeDesktop = Object.freeze(
       createTauriDesktopBridge({
         invoke,
         clipboard: window.navigator?.clipboard ?? null,
         platform: platformFromNavigator(window.navigator),
+        tokenHolder,
       }),
     );
   } else {

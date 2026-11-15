@@ -1,7 +1,10 @@
 // Stage 1.5 smoke test: launch the real Tauri Framecode executable (not a
 // probe page) and verify through WebView2's DevTools protocol that the
 // existing frontend boots to the Home screen with the truthful desktop
-// adapter installed and no uncaught startup errors.
+// adapter installed and no uncaught startup errors. Since Stage 3 it also
+// drives the file operations end to end, and since Stage 4 the asset
+// pipeline: token delivery, the same-origin asset request matrix, a
+// same-origin canvas pixel read, and the recovery relink command path.
 //
 // Prerequisite: a built Tauri binary AND the Microsoft Edge WebView2
 // Runtime (desktop Windows ships it in-box; Windows Server does not - the
@@ -76,6 +79,42 @@ writeFileSync(
       version: 1,
       source: fixtureSource,
       lastValid: fixtureSource,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+
+// Stage 4 smoke fixtures: a 1x1 green PNG (same bytes as the Electron
+// desktop suite) referenced by a second project fixture, so Open Recent
+// authorizes it through the scan and the same-origin asset route can be
+// exercised end to end.
+const testImgPath = join(tmpdir(), `framecode-stage4-smoke-${process.pid}.png`);
+const unauthorizedImgPath = join(
+  tmpdir(),
+  `framecode-stage4-smoke-unauthorized-${process.pid}.png`,
+);
+const pngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const pngBytes = Buffer.from(pngBase64, "base64");
+writeFileSync(testImgPath, pngBytes);
+writeFileSync(unauthorizedImgPath, pngBytes);
+const assetFixturePath = join(
+  tmpdir(),
+  `framecode-stage4-smoke-${process.pid}.framecode.json`,
+);
+const assetFixtureSource =
+  'composition("Stage4Smoke").duration(5)\nimage("hero").at(0).for(5).source(' +
+  JSON.stringify(testImgPath) +
+  ")";
+writeFileSync(
+  assetFixturePath,
+  JSON.stringify(
+    {
+      format: "framecode-project",
+      version: 1,
+      source: assetFixtureSource,
+      lastValid: assetFixtureSource,
     },
     null,
     2,
@@ -354,7 +393,7 @@ try {
             ];
             return required.every(
               (m) => typeof b[m] === "function",
-            ) && b.assetToken === "" && typeof b.platform === "string";
+            ) && typeof b.assetToken === "string" && typeof b.platform === "string";
           })()`,
         );
         await evaluate(
@@ -412,6 +451,94 @@ try {
               steps.error = error?.message ?? String(error);
             }
             return JSON.stringify(steps);
+          })()`,
+        );
+        // Stage 4 asset features. The capability token is delivered
+        // asynchronously, so wait for it before building any asset URL.
+        await evaluate(
+          "assetTokenWait",
+          `(async () => {
+            for (let i = 0; i < 200; i++) {
+              const token = window.framecodeDesktop?.assetToken;
+              if (token) return token;
+              await new Promise((r) => setTimeout(r, 50));
+            }
+            return "";
+          })()`,
+        );
+        await evaluate(
+          "assetMatrix",
+          `(async () => {
+            const token = window.framecodeDesktop.assetToken;
+            const base = location.origin + "/assets/?path=";
+            const enc = encodeURIComponent;
+            const invoke = window.__TAURI__.core.invoke;
+            const img = ${JSON.stringify(testImgPath)};
+            const stranger = ${JSON.stringify(unauthorizedImgPath)};
+            const steps = {};
+            const status = async (u, init) => {
+              try { return (await fetch(u, init)).status; }
+              catch { return "fetch-error"; }
+            };
+            try {
+              // Opening the image-bearing fixture authorizes its scanned
+              // asset paths for this webview (and drops prior ones).
+              const loaded = await invoke("project_open_recent", { path: ${JSON.stringify(assetFixturePath)} });
+              steps.scanOpen = loaded?.project?.source === ${JSON.stringify(assetFixtureSource)};
+              // Authorized + this window's token serves the real bytes.
+              steps.authorized = await status(base + enc(img) + "&token=" + token);
+              steps.wrongToken = await status(base + enc(img) + "&token=forged");
+              steps.noToken = await status(base + enc(img));
+              steps.missingPath = await status(location.origin + "/assets/");
+              steps.relative = await status(base + enc("relative.png") + "&token=" + token);
+              steps.post = await status(base + enc(img) + "&token=" + token, { method: "POST" });
+              steps.unauthorized = await status(base + enc(stranger) + "&token=" + token);
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            await invoke("recents_remove", { path: ${JSON.stringify(assetFixturePath)} });
+            return JSON.stringify(steps);
+          })()`,
+        );
+        // Same-origin canvas proof: the authorized image decodes, draws,
+        // and getImageData succeeds on it (a tainted canvas would throw
+        // SecurityError), and the drawn pixel is the green source color.
+        await evaluate(
+          "canvasPixel",
+          `(async () => {
+            const token = window.framecodeDesktop.assetToken;
+            const img = new Image();
+            img.src =
+              location.origin + "/assets/?path=" +
+              encodeURIComponent(${JSON.stringify(testImgPath)}) +
+              "&token=" + token;
+            await new Promise((resolve, reject) => {
+              img.onload = resolve;
+              img.onerror = () => reject(new Error("image failed to load"));
+            });
+            const canvas = document.createElement("canvas");
+            canvas.width = 1;
+            canvas.height = 1;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, 1, 1);
+            return JSON.stringify({ r: data[0], g: data[1], b: data[2] });
+          })()`,
+        );
+        // Recovery relinking, safe for an unattended run: with no recovery
+        // data there is no candidate and no consent dialog, so the command
+        // path is exercised without ever blocking on native UI.
+        await evaluate(
+          "relink",
+          `(async () => {
+            const invoke = window.__TAURI__.core.invoke;
+            try {
+              await invoke("recovery_clear");
+              const result = await invoke("relink_recovery_assets");
+              return JSON.stringify(result);
+            } catch (error) {
+              return JSON.stringify({ error: error?.message ?? String(error) });
+            }
           })()`,
         );
         ws.close();
@@ -521,6 +648,97 @@ try {
     );
   }
 
+  // Stage 4: the capability token must actually arrive; without it no
+  // asset URL can ever be built, so this is the first hard gate.
+  expect(
+    "asset token delivered by the Rust backend",
+    typeof checks.assetTokenWait === "string" &&
+      /^[0-9a-f]{64}$/.test(checks.assetTokenWait),
+    `assetToken=${JSON.stringify(checks.assetTokenWait)}`,
+  );
+
+  // Stage 4 asset request matrix, driven in the real app over CDP.
+  let assetMatrix = null;
+  try {
+    assetMatrix = JSON.parse(checks.assetMatrix ?? "null");
+  } catch {
+    // A missing/unparsable step log is reported as the failure below.
+  }
+  expect("asset matrix ran without errors", !!assetMatrix && !assetMatrix.error, `steps=${checks.assetMatrix}`);
+  if (assetMatrix && !assetMatrix.error) {
+    expect(
+      "Open Recent scan authorized the fixture image",
+      assetMatrix.scanOpen === true,
+      `scanOpen=${JSON.stringify(assetMatrix.scanOpen)}`,
+    );
+    expect(
+      "authorized asset serves HTTP 200 on the app origin",
+      assetMatrix.authorized === 200,
+      `authorized=${JSON.stringify(assetMatrix.authorized)}`,
+    );
+    expect(
+      "forged token receives HTTP 403",
+      assetMatrix.wrongToken === 403,
+      `wrongToken=${JSON.stringify(assetMatrix.wrongToken)}`,
+    );
+    expect(
+      "missing token receives HTTP 403",
+      assetMatrix.noToken === 403,
+      `noToken=${JSON.stringify(assetMatrix.noToken)}`,
+    );
+    expect(
+      "missing path receives HTTP 400",
+      assetMatrix.missingPath === 400,
+      `missingPath=${JSON.stringify(assetMatrix.missingPath)}`,
+    );
+    expect(
+      "relative path receives HTTP 400",
+      assetMatrix.relative === 400,
+      `relative=${JSON.stringify(assetMatrix.relative)}`,
+    );
+    expect(
+      "POST receives HTTP 405",
+      assetMatrix.post === 405,
+      `post=${JSON.stringify(assetMatrix.post)}`,
+    );
+    expect(
+      "unauthorized image path receives HTTP 403",
+      assetMatrix.unauthorized === 403,
+      `unauthorized=${JSON.stringify(assetMatrix.unauthorized)}`,
+    );
+  }
+
+  // Stage 4 same-origin canvas proof: a tainted canvas would throw on
+  // getImageData, so a decoded green pixel is the real evidence.
+  let canvasPixel = null;
+  try {
+    canvasPixel = JSON.parse(checks.canvasPixel ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "authorized image draws untainted with the green source pixel",
+    !!canvasPixel &&
+      canvasPixel.g > 100 &&
+      canvasPixel.g > canvasPixel.r + 40 &&
+      canvasPixel.g > canvasPixel.b + 40,
+    `canvasPixel=${checks.canvasPixel}`,
+  );
+
+  // Stage 4 recovery relink: with no recovery data there are no candidates
+  // and no consent dialog, so the command path must answer empty.
+  let relink = null;
+  try {
+    relink = JSON.parse(checks.relink ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "relink_recovery_assets answers empty without recovery data",
+    !!relink && !relink.error && Array.isArray(relink.authorized) && relink.authorized.length === 0,
+    `relink=${checks.relink}`,
+  );
+
   if (failures.length) {
     exitCode = 1;
     console.error("TAURI SMOKE FAIL: " + failures.length + " check(s) failed");
@@ -534,11 +752,13 @@ try {
   // Kill the whole process tree (Tauri spawns WebView2 helper processes).
   spawn("taskkill", ["/PID", String(app.pid), "/T", "/F"]);
   await sleep(1000);
-  // The Stage 3 fixture is only smoke-test scaffolding.
-  try {
-    unlinkSync(fixturePath);
-  } catch {
-    // Nothing to clean up when the save step never happened.
+  // The smoke fixtures are only scaffolding.
+  for (const file of [fixturePath, testImgPath, unauthorizedImgPath, assetFixturePath]) {
+    try {
+      unlinkSync(file);
+    } catch {
+      // Nothing to clean up when the step never happened.
+    }
   }
   process.exit(exitCode);
 }
