@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   createTauriDesktopBridge,
+  createTokenHolder,
   platformFromNavigator,
 } from "../src/renderer/tauri-bridge.mjs";
 
@@ -38,13 +39,17 @@ const PRELOAD_VALUE_KEYS = [
   "onCommand",
 ];
 
+// The one method the Tauri adapter adds beyond the Electron preload
+// surface: the deterministic readiness signal for the asynchronous
+// capability-token delivery. The renderer treats it as optional, so the
+// Electron path is unchanged.
+const TAURI_ONLY_KEYS = ["whenAssetTokenReady"];
+
 const NOT_YET = [
   "confirmUnsaved",
   "setDirty",
   "setStage",
   "setCodePanel",
-  "relinkRecoveryAssets",
-  "importImage",
   "editClipboard",
   "finishClose",
 ];
@@ -61,7 +66,13 @@ const BRIDGED = [
   "clearRecovery",
 ];
 
-const bridge = (invoke) =>
+// Stage 4: the asset commands join the bridged surface.
+const BRIDGED_ASSET_COMMANDS = [
+  ["importImage", "image_import_dialog", undefined],
+  ["relinkRecoveryAssets", "relink_recovery_assets", undefined],
+];
+
+const bridge = (invoke, tokenHolder) =>
   createTauriDesktopBridge({
     invoke:
       invoke ??
@@ -71,6 +82,7 @@ const bridge = (invoke) =>
       writeText: async (text) => text,
     },
     platform: "win32",
+    tokenHolder,
   });
 
 test("adapter mirrors the entire Electron preload surface", () => {
@@ -85,9 +97,10 @@ test("adapter mirrors the entire Electron preload surface", () => {
 
 test("adapter exposes nothing beyond the preload surface", () => {
   const extra = Object.keys(bridge()).filter(
-    (key) => !PRELOAD_VALUE_KEYS.includes(key),
+    (key) =>
+      !PRELOAD_VALUE_KEYS.includes(key) && !TAURI_ONLY_KEYS.includes(key),
   );
-  assert.deepEqual(extra, []);
+  assert.deepEqual(extra, [], "only the documented Tauri-only method may exist");
 });
 
 test("every bridged persistence method really invokes, none are rejected", async () => {
@@ -232,6 +245,108 @@ test("saveProject rejects invalid drafts without invoking Rust", async () => {
 test("clearRecovery invokes the real Rust command", async () => {
   const b = bridge();
   assert.deepEqual(await b.clearRecovery(), { command: "recovery_clear", args: undefined });
+});
+
+test("stage 4 asset commands invoke the real Rust commands", async () => {
+  const b = bridge();
+  for (const [method, command] of BRIDGED_ASSET_COMMANDS) {
+    assert.deepEqual(await b[method](), { command, args: undefined });
+  }
+});
+
+test("assetToken reads the token holder and starts empty", async () => {
+  // Without a holder the getter still answers "" (the sync contract).
+  assert.equal(bridge().assetToken, "");
+  const holder = { current: "" };
+  const b = bridge(undefined, holder);
+  assert.equal(b.assetToken, "");
+  holder.current = "abc123";
+  assert.equal(b.assetToken, "abc123", "the getter is live, not cached");
+});
+
+test("whenAssetTokenReady reports a delivered token immediately, without invoking", async () => {
+  // Without a holder the signal still settles (with "") so callers can
+  // always await it.
+  assert.equal(await bridge().whenAssetTokenReady(), "");
+  // A holder that already holds a token: immediate, and no attempt is
+  // started.
+  let refreshCalls = 0;
+  const holder = {
+    current: "abc123",
+    refresh: async () => {
+      refreshCalls++;
+      return "abc123";
+    },
+  };
+  const b = bridge(undefined, holder);
+  assert.equal(await b.whenAssetTokenReady(), "abc123");
+  assert.equal(refreshCalls, 0, "a delivered token needs no re-invocation");
+  assert.equal(b.assetToken, "abc123", "the sync getter contract is intact");
+});
+
+test("whenAssetTokenReady falls back to the current holder value", async () => {
+  // A holder without a refresh (older wiring or direct tests) still
+  // settles deterministically with what the getter reads.
+  const holder = { current: "tok" };
+  const b = bridge(undefined, holder);
+  assert.equal(await b.whenAssetTokenReady(), "tok");
+});
+
+test("whenAssetTokenReady re-invokes asset_token until delivery succeeds", async () => {
+  // The real retry path: a failing invoke keeps the token empty, and
+  // each subsequent await drives the next attempt until one delivers.
+  let calls = 0;
+  const holder = createTokenHolder(async (command) => {
+    assert.equal(command, "asset_token");
+    calls++;
+    if (calls <= 2) throw new Error("backend not ready yet");
+    return "tok789";
+  });
+  const b = createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: null,
+    platform: "win32",
+    tokenHolder: holder,
+    tokenRetryMs: 0,
+    delay: () => Promise.resolve(),
+  });
+  assert.equal(await b.whenAssetTokenReady(), "", "first attempt fails");
+  assert.equal(b.assetToken, "", "a failed attempt never fakes a token");
+  assert.equal(await b.whenAssetTokenReady(), "", "second attempt fails");
+  assert.equal(await b.whenAssetTokenReady(), "tok789", "third attempt delivers");
+  assert.equal(calls, 3, "each await after a failure re-invoked asset_token");
+  assert.equal(b.assetToken, "tok789");
+  // After success the signal resolves immediately without invoking.
+  assert.equal(await b.whenAssetTokenReady(), "tok789");
+  assert.equal(calls, 3);
+});
+
+test("concurrent readiness awaiters share one in-flight attempt", async () => {
+  let calls = 0;
+  let release;
+  const holder = createTokenHolder(async () => {
+    calls++;
+    return new Promise((resolve) => {
+      release = () => resolve("tokShared");
+    });
+  });
+  const b = createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: null,
+    platform: "win32",
+    tokenHolder: holder,
+    tokenRetryMs: 0,
+    delay: () => Promise.resolve(),
+  });
+  const first = b.whenAssetTokenReady();
+  const second = b.whenAssetTokenReady();
+  // Let the paced attempt chain actually start the refresh before
+  // releasing the fake backend.
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await first, "tokShared");
+  assert.equal(await second, "tokShared");
+  assert.equal(calls, 1, "the attempt in flight is shared, not duplicated");
 });
 
 test("writeRecovery validates through the shared core format before invoking", async () => {

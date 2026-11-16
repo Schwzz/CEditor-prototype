@@ -1245,6 +1245,17 @@ async function boot() {
   void refreshAbout().then((info) => {
     if (info) $("homeVersion").textContent = "v" + info.version;
   });
+  // The capability token is delivered asynchronously, and asset URLs
+  // without it are always rejected; image loading and the recovery
+  // relink below wait for delivery to settle instead of racing it. The
+  // Electron preload has no readiness signal (its token already exists
+  // at boot), so the optional call is a no-op there.
+  try {
+    await desktop.whenAssetTokenReady?.();
+  } catch {
+    // A readiness failure leaves the token empty; the image cache keeps
+    // its queued sources and the renderer's error paths stay truthful.
+  }
   try {
     const recovery = await desktop.readRecovery();
     if (recovery) {
@@ -1262,7 +1273,10 @@ async function boot() {
           resolve();
           // Authorization is granted only by the main process through a
           // native consent dialog; evicting prior failed entries lets
-          // restored images actually load and render.
+          // restored images actually load and render. If the capability
+          // token delivery failed, the image cache keeps these sources
+          // queued instead of firing tokenless requests, so nothing here
+          // pretends the images are usable before they really load.
           try {
             const relink = await desktop.relinkRecoveryAssets();
             for (const granted of relink?.authorized || [])

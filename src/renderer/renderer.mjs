@@ -15,14 +15,25 @@ export class ImageCache {
   #loading = new Set();
   #failed = new Set();
   #listeners = new Set();
+  // Sources whose real load is waiting for the asset token: under Tauri a
+  // URL without the capability token is always rejected, so firing it
+  // before the token is delivered would only poison the source with a
+  // permanent failure entry.
+  #awaitingToken = new Set();
+  #waitingForToken = false;
 
-  // Same-origin asset URL (framecode://app/assets keeps the page origin, so
-  // drawn images never taint the preview canvas). Built identically by
-  // every cache API entry so keys match everywhere.
+  // Same-origin asset URL keeps drawn images same-origin with the page, so
+  // canvas pixel reads never taint. Under Electron the page origin is
+  // framecode://app (framecode://app/assets); under Tauri it is the
+  // overridden tauri protocol's origin (…/assets on the app origin).
+  // Built identically by every cache API entry so keys match everywhere.
   #url(source) {
     const token = window.framecodeDesktop?.assetToken || "";
+    const base = window.__TAURI__
+      ? location.origin + "/assets/?path="
+      : "framecode://app/assets/?path=";
     return (
-      "framecode://app/assets/?path=" +
+      base +
       encodeURIComponent(source) +
       (token ? "&token=" + token : "")
     );
@@ -33,8 +44,29 @@ export class ImageCache {
     const url = this.#url(source);
     const cached = this.#cache.get(url);
     if (cached) return cached;
+    if (this.#awaitingToken.has(source)) {
+      // Still queued after a failed delivery: re-arm the wait, so a
+      // retried token delivery (a fresh readiness signal) recovers the
+      // load on the next render — no user action required.
+      this.#waitAndFlush();
+      return null;
+    }
     if (this.#loading.has(url) || this.#failed.has(url)) return null;
 
+    // The synchronous assetToken getter may still read "" while the
+    // async delivery is in flight. Instead of firing a request that can
+    // only be rejected, queue the source and start the real load once
+    // the token readiness signal resolves — no user action required.
+    const token = window.framecodeDesktop?.assetToken || "";
+    if (window.__TAURI__ && !token) {
+      this.#queueUntilTokenReady(source);
+      return null;
+    }
+    this.#startLoad(source, url);
+    return null;
+  }
+
+  #startLoad(source, url) {
     this.#loading.add(url);
     const img = new Image();
     img.onload = () => {
@@ -49,17 +81,54 @@ export class ImageCache {
       this.#emit(url);
     };
     img.src = url;
-    return null;
   }
+
+  #queueUntilTokenReady(source) {
+    this.#awaitingToken.add(source);
+    this.#waitAndFlush();
+  }
+
+  // Awaits the desktop's token readiness signal and, only when a usable
+  // token was actually delivered, starts the real loads for every queued
+  // source. The signal resolves with "" while delivery keeps failing —
+  // a tokenless asset URL is always rejected — so an empty token keeps
+  // the sources queued (never a permanent failure entry). The bridge
+  // paces real asset_token re-invocations behind that signal, and any
+  // later get() for a queued source re-arms the wait, so the next
+  // successful retry loads the same images without user action.
+  #waitAndFlush() {
+    if (this.#waitingForToken) return;
+    const ready = window.framecodeDesktop?.whenAssetTokenReady?.();
+    if (typeof ready?.then !== "function") return;
+    this.#waitingForToken = true;
+    ready
+      .catch(() => {})
+      .then(() => {
+        this.#waitingForToken = false;
+        const token = window.framecodeDesktop?.assetToken || "";
+        if (!token) return;
+        const queued = [...this.#awaitingToken];
+        this.#awaitingToken.clear();
+        for (const queuedSource of queued) {
+          const tokenUrl = this.#url(queuedSource);
+          if (this.#cache.get(tokenUrl) || this.#loading.has(tokenUrl)) continue;
+          this.#startLoad(queuedSource, tokenUrl);
+          this.#emit(queuedSource);
+        }
+      });
+  }
+
   evict(source) {
     const url = this.#url(source);
     this.#cache.delete(url);
     this.#failed.delete(url);
+    this.#awaitingToken.delete(source);
   }
   clearAll() {
     this.#cache.clear();
     this.#loading.clear();
     this.#failed.clear();
+    this.#awaitingToken.clear();
   }
   size() {
     return this.#cache.size;

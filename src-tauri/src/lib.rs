@@ -1,19 +1,24 @@
 //! Framecode's Tauri backend.
 //!
-//! Stage 3 of the Tauri migration: file operations (Open dialog, Open
-//! Recent, New, Save, Save As) joined the Stage 2 persistence backend
-//! (project files, settings, recents, recovery), all ported from the
-//! Electron main process with identical on-disk formats and validation.
-//! Native menus, window controls, the close handshake, image import, and
-//! asset authorization belong to later stages and are deliberately absent.
+//! Stage 4 of the Tauri migration: asset handling (image import, secure
+//! asset authorization and serving, recovery relinking) joined the Stage 2
+//! persistence backend and the Stage 3 file operations, all ported from the
+//! Electron main process with identical on-disk formats, validation, and
+//! security model. Native menus, window controls, and the close handshake
+//! belong to later stages and are deliberately absent.
 
+mod assets;
+mod composition;
 mod file_operations;
 mod project_files;
 mod recents;
 mod recovery;
 mod settings;
 
-use file_operations::{FileOperations, LoadedProject, NewProject, SavedProject, TauriDialogs};
+use assets::{AssetAuthorizer, CapabilityTokens, RelinkResult};
+use file_operations::{
+    Dialogs, FileOperations, LoadedProject, NewProject, SavedProject, TauriDialogs,
+};
 use recents::RecentProjects;
 use recovery::RecoveryStore;
 use serde::Serialize;
@@ -85,6 +90,145 @@ impl Persistence {
 }
 
 type CommandResult<T> = Result<T, String>;
+
+/// Per-webview asset authorization and capability tokens (Stage 4): the
+/// Electron `window.__authorizedAssets` sets and `windowTokenMap`, keyed
+/// by Tauri webview label. Authorization is minted only inside Rust
+/// commands, at trusted moments; the renderer only ever receives its
+/// capability token so it can build asset URLs.
+pub struct AssetState {
+    authorizer: AssetAuthorizer,
+    tokens: CapabilityTokens,
+}
+
+impl Default for AssetState {
+    fn default() -> AssetState {
+        AssetState {
+            authorizer: AssetAuthorizer::new(),
+            tokens: CapabilityTokens::new(),
+        }
+    }
+}
+
+/// The Electron `scanForAssets` + `__authorizedAssets.clear()` pair: a
+/// successful project adoption drops the webview's authorized set and
+/// re-authorizes the image paths referenced by `source` and `lastValid`.
+/// The scan is the engine-faithful compile in `composition.rs`: only the
+/// resolved `source` paths of valid image clips are candidates, and a
+/// composition that does not compile contributes nothing (fail-closed).
+/// The same extension/size/absolute-path gates bound every authorization,
+/// so non-image paths can never be authorized.
+fn scan_project_assets(assets: &AssetState, label: &str, project: &Value) {
+    let mut seen = std::collections::HashSet::new();
+    for key in ["source", "lastValid"] {
+        let Some(source) = project.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(sources) = composition::image_clip_sources(source) else {
+            continue;
+        };
+        for path in sources {
+            if seen.insert(path.clone()) {
+                assets.authorizer.authorize(label, &path);
+            }
+        }
+    }
+}
+
+/// The overridden `tauri` URI scheme protocol (Stage 4). Tauri only
+/// registers its own handler when the app has not registered one for the
+/// scheme (`manager/webview.rs`), so this handler takes over the app
+/// origin: it serves the three renderer files through the embedded asset
+/// resolver and `/assets/` requests through the Electron guard chain.
+/// Serving assets on the app origin keeps drawn images same-origin so
+/// `<canvas>` pixel reads never taint — the same property Electron gets
+/// from `framecode://app/assets/`.
+fn tauri_protocol<R: tauri::Runtime>(
+    ctx: tauri::UriSchemeContext<'_, R>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    fn response(
+        status: u16,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+    ) -> tauri::http::Response<Vec<u8>> {
+        let mut builder = tauri::http::Response::builder().status(status);
+        if let Some(content_type) = content_type {
+            builder = builder.header("Content-Type", content_type);
+        }
+        builder.body(body).expect("valid protocol response")
+    }
+
+    let state = ctx.app_handle().state::<AssetState>();
+    let method = request.method().as_str().to_uppercase();
+    let path = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or_default().to_string();
+
+    if path == "/assets" || path.starts_with("/assets/") {
+        // URL.searchParams.get returns the first occurrence of a key.
+        let mut path_param = None;
+        let mut token_param = None;
+        for (key, value) in assets::parse_query(&query) {
+            match key.as_str() {
+                "path" if path_param.is_none() => path_param = Some(value),
+                "token" if token_param.is_none() => token_param = Some(value),
+                _ => {}
+            }
+        }
+        // The full Electron guard chain (method, absolute path, token,
+        // per-webview authorization with the symlink re-check) runs inside
+        // decide_asset_request in the same order.
+        return match assets::decide_asset_request(
+            &method,
+            path_param.as_deref(),
+            token_param.as_deref(),
+            ctx.webview_label(),
+            &state.authorizer,
+            &state.tokens,
+        ) {
+            assets::AssetDecision::Reject(status) => {
+                let body: &[u8] = if status == 400 {
+                    b"Missing or invalid asset path"
+                } else {
+                    b""
+                };
+                response(status, None, body.to_vec())
+            }
+            assets::AssetDecision::Serve { path, content_type } => match std::fs::read(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    response(404, None, Vec::new())
+                }
+                Err(_) => response(403, None, Vec::new()),
+                Ok(bytes) => response(
+                    200,
+                    Some(content_type),
+                    if method == "HEAD" { Vec::new() } else { bytes },
+                ),
+            },
+        };
+    }
+
+    // App files: GET/HEAD only, exactly like the Electron files map's
+    // combined guard (a POST to an app file is 404 there, not 405).
+    if method != "GET" && method != "HEAD" {
+        return response(404, None, b"Not found".to_vec());
+    }
+    match assets::decide_app_file_or_root(&path) {
+        None => response(404, None, b"Not found".to_vec()),
+        Some((key, content_type)) => match ctx.app_handle().asset_resolver().get(key.to_string()) {
+            None => response(404, None, b"Not found".to_vec()),
+            Some(asset) => response(
+                200,
+                Some(content_type),
+                if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    asset.bytes
+                },
+            ),
+        },
+    }
+}
 
 fn with_stores<T>(
     state: &Persistence,
@@ -197,17 +341,29 @@ fn project_write(path: String, project: Value) -> CommandResult<()> {
 /// The Electron `project:open` handler: the Open dialog picks a `.json`
 /// project, it is read and recorded in recents, and the session adopts it
 /// as the current document path. Canceling the dialog returns `None`.
+/// A successful open drops the webview's authorized asset set and
+/// re-authorizes the scanned image paths (the Electron clear +
+/// `scanForAssets` pair).
 #[tauri::command]
 fn project_open_dialog(
     app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<Persistence>,
     files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
 ) -> CommandResult<Option<LoadedProject>> {
     let dialogs = TauriDialogs::new(app);
     files
         .run_exclusive(|| {
             with_stores(&state, |stores| {
                 file_operations::open_project_dialog(&files, &mut stores.recents, &dialogs)
+                    .map(|loaded| {
+                        loaded.map(|loaded| {
+                            assets.authorizer.clear(window.label());
+                            scan_project_assets(&assets, window.label(), &loaded.project);
+                            loaded
+                        })
+                    })
                     .map_err(|e| e.to_string())
             })
         })
@@ -216,16 +372,24 @@ fn project_open_dialog(
 
 /// The Electron `project:open-recent` handler: the same trusted pipeline as
 /// the Open dialog, with the path supplied by the persisted recents list.
+/// A successful open re-authorizes assets exactly like the Open dialog.
 #[tauri::command]
 fn project_open_recent(
+    window: tauri::Window,
     state: tauri::State<Persistence>,
     files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
     path: String,
 ) -> CommandResult<LoadedProject> {
     files
         .run_exclusive(|| {
             with_stores(&state, |stores| {
                 file_operations::open_recent_file(&files, &mut stores.recents, &path)
+                    .map(|loaded| {
+                        assets.authorizer.clear(window.label());
+                        scan_project_assets(&assets, window.label(), &loaded.project);
+                        loaded
+                    })
                     .map_err(|e| e.to_string())
             })
         })
@@ -263,10 +427,84 @@ fn project_save(
 }
 
 /// The Electron `project:new` handler: the session forgets its current
-/// document path and reports the Untitled document name.
+/// document path and reports the Untitled document name. The authorized
+/// asset set is dropped with the session, as in Electron.
 #[tauri::command]
-fn project_new(files: tauri::State<FileOperations>) -> NewProject {
+fn project_new(
+    window: tauri::Window,
+    files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
+) -> NewProject {
+    assets.authorizer.clear(window.label());
     file_operations::new_project(&files)
+}
+
+/// The Electron preload's `assetToken` (Stage 4): the webview's capability
+/// token for building asset URLs. This command only reads the token — it
+/// never grants authorization, which stays a Rust-side trusted action.
+#[tauri::command]
+fn asset_token(window: tauri::Window, assets: tauri::State<AssetState>) -> String {
+    assets.tokens.token_for(window.label())
+}
+
+/// The Electron `image:import` handler: the Import image dialog picks a
+/// file, authorization is minted here in Rust (never by the renderer), and
+/// the picked path is returned for the renderer's `image(...)` clip.
+/// Canceling the dialog returns `None`; a rejected file fails with the
+/// Electron error message.
+#[tauri::command]
+fn image_import_dialog(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
+) -> CommandResult<Option<String>> {
+    let dialogs = TauriDialogs::new(app);
+    files
+        .run_exclusive(|| {
+            let Some(path) = dialogs.pick_image() else {
+                return Ok(None);
+            };
+            if assets.authorizer.authorize(window.label(), &path).is_none() {
+                return Err(
+                    "Could not import image: unsupported format, missing file, or exceeds size limit."
+                        .to_string(),
+                );
+            }
+            Ok(Some(path))
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The Electron `recovery:relink` handler. The recovery file this backend
+/// wrote itself is re-read here — the renderer never supplies the document
+/// — and the candidate list comes from the engine-faithful compile scan in
+/// `assets.rs`. Authorization is minted only after the user accepts the
+/// consent dialog that lists the exact paths; the response carries the
+/// original candidate strings so the renderer can evict their failed
+/// cache entries.
+#[tauri::command]
+fn relink_recovery_assets(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    state: tauri::State<Persistence>,
+    files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
+) -> CommandResult<RelinkResult> {
+    let dialogs = TauriDialogs::new(app);
+    files
+        .run_exclusive(|| -> Result<RelinkResult, String> {
+            let project = with_stores(&state, |stores| {
+                stores.recovery.read().map_err(|e| e.to_string())
+            })?;
+            Ok(assets::relink_recovery_assets(
+                window.label(),
+                project.as_ref(),
+                &assets.authorizer,
+                &dialogs,
+            ))
+        })
+        .map_err(|e| e.to_string())
 }
 
 pub fn run() {
@@ -287,8 +525,16 @@ pub fn run() {
             project_open_recent,
             project_save,
             project_new,
+            asset_token,
+            image_import_dialog,
+            relink_recovery_assets,
         ])
         .plugin(tauri_plugin_dialog::init())
+        // Stage 4: the overridden `tauri` protocol serves the app files and
+        // /assets/ on the app origin; see tauri_protocol. Tauri only
+        // registers its own handler when the app has not registered one
+        // for this scheme.
+        .register_uri_scheme_protocol("tauri", tauri_protocol)
         .setup(|app| {
             // The data directory mirrors Electron's app.getPath("userData")
             // role: all persistence files live under the OS app-data
@@ -301,6 +547,7 @@ pub fn run() {
                 .map_err(|e| format!("Framecode could not start its persistence store: {e}"))?;
             app.manage(persistence);
             app.manage(FileOperations::new());
+            app.manage(AssetState::default());
             Ok(())
         })
         .run(tauri::generate_context!())

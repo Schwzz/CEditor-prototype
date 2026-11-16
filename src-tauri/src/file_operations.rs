@@ -17,11 +17,12 @@
 //! Dialogs behind the `Dialogs` trait mirror the Electron handlers'
 //! injectable `dialogs = dialog` parameter, so the core operations are
 //! unit-testable with fixture dialogs; `TauriDialogs` is the real
-//! implementation over the tauri-plugin-dialog plugin.
+//! implementation over the tauri-plugin-dialog plugin. Stage 4 adds the
+//! Import image picker and the relink consent dialog to the same trait.
 //!
 //! Deferred to later stages, as in the Electron handlers they wrap:
-//! asset authorization scanning, unsaved-change prompts, window titles,
-//! and native menus.
+//! unsaved-change prompts, window titles, and native menus. Asset
+//! authorization scanning is invoked from `lib.rs` (Stage 4).
 
 use crate::project_files::{PersistenceError, Result};
 use crate::recents::{js_is_absolute, RecentProjects};
@@ -70,6 +71,13 @@ pub trait Dialogs {
     /// is the session's current path, mirroring the Electron handler's
     /// `defaultPath: window.__currentPath || "Untitled.framecode.json"`.
     fn pick_save(&self, current: Option<&str>) -> Option<String>;
+    /// The Import image dialog's chosen path, or `None` on cancel. The
+    /// filter matches the Electron `image:import` handler's exactly.
+    fn pick_image(&self) -> Option<String>;
+    /// The relink consent dialog: `true` only when the user affirms
+    /// granting the listed image paths to this window (the Electron
+    /// "Relink images" button; canceling or "Skip" is a refusal).
+    fn confirm_relink(&self, candidates: &[String]) -> bool;
 }
 
 /// The real dialogs, over the tauri-plugin-dialog plugin. Blocking dialogs
@@ -120,6 +128,39 @@ impl Dialogs for TauriDialogs {
             .blocking_save_file()
             .and_then(|file| file.into_path().ok())
             .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn pick_image(&self) -> Option<String> {
+        use tauri_plugin_dialog::DialogExt;
+        self.app
+            .dialog()
+            .file()
+            .set_title("Import image")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp", "gif"])
+            .blocking_pick_file()
+            .and_then(|file| file.into_path().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn confirm_relink(&self, candidates: &[String]) -> bool {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+        // The Electron dialog's `detail` lists the exact paths the window
+        // would gain access to; the message dialog folds it into the body.
+        let message = format!(
+            "Relink the images used by the recovered draft? Granting access \
+             lets this draft display them.\n\nFiles that will be accessible \
+             to this window:\n{}",
+            candidates.join("\n")
+        );
+        self.app
+            .dialog()
+            .message(message)
+            .title("Relink recovered images")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Relink images".into(),
+                "Skip".into(),
+            ))
+            .blocking_show()
     }
 }
 
@@ -356,8 +397,11 @@ mod tests {
     struct FixtureDialogs {
         open: Option<String>,
         save: Option<String>,
+        image: Option<String>,
+        relink: bool,
         calls: Arc<StdMutex<Vec<&'static str>>>,
         last_default: Arc<StdMutex<Option<String>>>,
+        last_relink: Arc<StdMutex<Option<Vec<String>>>>,
     }
 
     impl FixtureDialogs {
@@ -365,16 +409,22 @@ mod tests {
             FixtureDialogs {
                 open: None,
                 save: None,
+                image: None,
+                relink: false,
                 calls: Arc::new(StdMutex::new(Vec::new())),
                 last_default: Arc::new(StdMutex::new(None)),
+                last_relink: Arc::new(StdMutex::new(None)),
             }
         }
         fn answered(open: Option<&str>, save: Option<&str>) -> FixtureDialogs {
             FixtureDialogs {
                 open: open.map(String::from),
                 save: save.map(String::from),
+                image: None,
+                relink: false,
                 calls: Arc::new(StdMutex::new(Vec::new())),
                 last_default: Arc::new(StdMutex::new(None)),
+                last_relink: Arc::new(StdMutex::new(None)),
             }
         }
         fn calls(&self) -> Vec<String> {
@@ -399,6 +449,18 @@ mod tests {
                 .unwrap()
                 .replace(current.unwrap_or("<none>").to_string());
             self.save.clone()
+        }
+        fn pick_image(&self) -> Option<String> {
+            self.calls.lock().unwrap().push("image");
+            self.image.clone()
+        }
+        fn confirm_relink(&self, candidates: &[String]) -> bool {
+            self.calls.lock().unwrap().push("relink");
+            self.last_relink
+                .lock()
+                .unwrap()
+                .replace(candidates.to_vec());
+            self.relink
         }
     }
 
