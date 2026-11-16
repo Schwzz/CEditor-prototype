@@ -15,6 +15,12 @@ export class ImageCache {
   #loading = new Set();
   #failed = new Set();
   #listeners = new Set();
+  // Sources whose real load is waiting for the asset token: under Tauri a
+  // URL without the capability token is always rejected, so firing it
+  // before the token is delivered would only poison the source with a
+  // permanent failure entry.
+  #awaitingToken = new Set();
+  #waitingForToken = false;
 
   // Same-origin asset URL keeps drawn images same-origin with the page, so
   // canvas pixel reads never taint. Under Electron the page origin is
@@ -38,8 +44,27 @@ export class ImageCache {
     const url = this.#url(source);
     const cached = this.#cache.get(url);
     if (cached) return cached;
-    if (this.#loading.has(url) || this.#failed.has(url)) return null;
+    if (
+      this.#loading.has(url) ||
+      this.#failed.has(url) ||
+      this.#awaitingToken.has(source)
+    )
+      return null;
 
+    // The synchronous assetToken getter may still read "" while the
+    // async delivery is in flight. Instead of firing a request that can
+    // only be rejected, queue the source and start the real load once
+    // the token readiness signal resolves — no user action required.
+    const token = window.framecodeDesktop?.assetToken || "";
+    if (window.__TAURI__ && !token) {
+      this.#queueUntilTokenReady(source);
+      return null;
+    }
+    this.#startLoad(source, url);
+    return null;
+  }
+
+  #startLoad(source, url) {
     this.#loading.add(url);
     const img = new Image();
     img.onload = () => {
@@ -54,17 +79,39 @@ export class ImageCache {
       this.#emit(url);
     };
     img.src = url;
-    return null;
   }
+
+  #queueUntilTokenReady(source) {
+    this.#awaitingToken.add(source);
+    if (this.#waitingForToken) return;
+    this.#waitingForToken = true;
+    const ready = window.framecodeDesktop?.whenAssetTokenReady?.();
+    (typeof ready?.then === "function" ? ready : Promise.resolve())
+      .catch(() => {})
+      .then(() => {
+        const queued = [...this.#awaitingToken];
+        this.#awaitingToken.clear();
+        this.#waitingForToken = false;
+        for (const queuedSource of queued) {
+          const tokenUrl = this.#url(queuedSource);
+          if (this.#cache.get(tokenUrl) || this.#loading.has(tokenUrl)) continue;
+          this.#startLoad(queuedSource, tokenUrl);
+          this.#emit(queuedSource);
+        }
+      });
+  }
+
   evict(source) {
     const url = this.#url(source);
     this.#cache.delete(url);
     this.#failed.delete(url);
+    this.#awaitingToken.delete(source);
   }
   clearAll() {
     this.#cache.clear();
     this.#loading.clear();
     this.#failed.clear();
+    this.#awaitingToken.clear();
   }
   size() {
     return this.#cache.size;

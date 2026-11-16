@@ -19,12 +19,13 @@
 //!   symlink-escape re-check Electron performs on a miss), missing files
 //!   (404), and other read errors (403).
 //!
-//! One documented delta from Electron: project scanning cannot compile the
-//! composition (the engine stays in JavaScript), so candidate paths come
-//! from a conservative scan of the `source("…")` string literals in
-//! `source` and `lastValid` instead of the compiled image clips. The same
-//! extension/size/absolute-path gates Electron applies to every candidate
-//! still bound the result; non-image extensions can never be authorized.
+//! Composition scanning uses `composition::image_clip_sources`, a faithful
+//! Rust port of the engine's `compile()` (`src/core/engine.mjs`): only the
+//! resolved `source` of valid image clips of a compiling composition become
+//! candidates, and anything the engine rejects contributes nothing. The
+//! same extension/size/absolute-path gates Electron applies to every
+//! candidate still bound the result; non-image extensions can never be
+//! authorized.
 
 use percent_encoding::percent_decode_str;
 use serde::Serialize;
@@ -215,120 +216,6 @@ impl CapabilityTokens {
     }
 }
 
-/// Decodes a `source("…")`-literal candidate list from a composition
-/// source. The engine compiles sources in JavaScript; the backend scan is
-/// the conservative approximation documented in the module header.
-pub fn scan_source_literals(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut literals = Vec::new();
-    let mut cursor = 0;
-    while let Some(index) = text[cursor..].find("source(") {
-        let after = cursor + index + "source(".len();
-        cursor = after;
-        // Skip whitespace up to the opening quote.
-        let rest = &bytes[after.min(bytes.len())..];
-        let mut offset = 0;
-        while offset < rest.len() && (rest[offset] as char).is_whitespace() {
-            offset += 1;
-        }
-        let Some(&quote) = rest.get(offset) else {
-            break;
-        };
-        if quote != b'"' && quote != b'\'' {
-            continue;
-        }
-        let mut value = String::new();
-        let mut scan = offset + 1;
-        let mut closed = false;
-        while scan < rest.len() {
-            let byte = rest[scan];
-            if byte == b'\\' {
-                // A JS escape: consume the escape sequence and unescape the
-                // common forms; unknown escapes keep the raw character.
-                scan += 1;
-                let Some(&escaped) = rest.get(scan) else {
-                    break;
-                };
-                scan += 1;
-                match escaped {
-                    b'n' => value.push('\n'),
-                    b'r' => value.push('\r'),
-                    b't' => value.push('\t'),
-                    b'b' => value.push('\u{8}'),
-                    b'f' => value.push('\u{c}'),
-                    b'v' => value.push('\u{b}'),
-                    b'0' => value.push('\0'),
-                    b'x' => {
-                        let hex = rest.get(scan..scan + 2).and_then(|hex| {
-                            u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
-                        });
-                        match hex {
-                            Some(code) => {
-                                value.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                                scan += 2;
-                            }
-                            None => value.push('\\'),
-                        }
-                    }
-                    b'u' => {
-                        if rest.get(scan).copied() == Some(b'{') {
-                            let end = rest[scan..]
-                                .iter()
-                                .position(|&b| b == b'}')
-                                .map(|end| scan + end);
-                            let code = end.and_then(|end| {
-                                u32::from_str_radix(
-                                    std::str::from_utf8(&rest[scan + 1..end]).ok()?,
-                                    16,
-                                )
-                                .ok()
-                            });
-                            match (code, end) {
-                                (Some(code), Some(end)) => {
-                                    value.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                                    scan = end + 1;
-                                }
-                                _ => value.push('\\'),
-                            }
-                        } else {
-                            let hex = rest.get(scan..scan + 4).and_then(|hex| {
-                                u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
-                            });
-                            match hex {
-                                Some(code) => {
-                                    value.push(char::from_u32(code).unwrap_or('\u{fffd}'));
-                                    scan += 4;
-                                }
-                                None => value.push('\\'),
-                            }
-                        }
-                    }
-                    other => value.push(other as char),
-                }
-                continue;
-            }
-            if byte == quote {
-                closed = true;
-                scan += 1;
-                break;
-            }
-            // Multi-byte UTF-8: copy the whole character.
-            let remainder = std::str::from_utf8(&rest[scan..]).unwrap_or("");
-            if let Some(character) = remainder.chars().next() {
-                value.push(character);
-                scan += character.len_utf8();
-            } else {
-                scan += 1;
-            }
-        }
-        cursor += scan;
-        if closed {
-            literals.push(value);
-        }
-    }
-    literals
-}
-
 /// The outcome of a validated asset request. `Serve` carries the original
 /// (unfolded) path so the caller reads exactly what was requested.
 #[derive(Debug, Clone, PartialEq)]
@@ -438,11 +325,122 @@ pub struct RelinkResult {
     pub authorized: Vec<String>,
 }
 
+/// The Electron `recovery:relink` orchestration, extracted behind the
+/// `Dialogs` trait so the dialog flow is testable without a real webview.
+///
+/// The recovery document was written by this backend itself — the renderer
+/// never supplies it. Candidate paths come only from the compiled valid
+/// image clips of the recovery `source`/`lastValid` compositions (the
+/// engine-faithful `composition::image_clip_sources` scan, fail-closed:
+/// anything the engine rejects contributes no candidates). Paths already
+/// authorized for this webview never reopen the consent dialog. When the
+/// user accepts the dialog that lists the exact remaining candidates,
+/// each one is authorized through the normal gates and the response
+/// carries the original candidate strings that passed.
+pub fn relink_recovery_assets(
+    label: &str,
+    recovery: Option<&serde_json::Value>,
+    authorizer: &AssetAuthorizer,
+    dialogs: &impl crate::file_operations::Dialogs,
+) -> RelinkResult {
+    let Some(project) = recovery else {
+        return RelinkResult {
+            authorized: Vec::new(),
+        };
+    };
+    // Compile each composition once; a failure contributes no candidates.
+    let mut seen: HashSet<String> = HashSet::new();
+    for key in ["source", "lastValid"] {
+        if let Some(source) = project.get(key).and_then(serde_json::Value::as_str) {
+            match crate::composition::image_clip_sources(source) {
+                Ok(sources) => seen.extend(sources),
+                Err(_) => continue,
+            }
+        }
+    }
+    let candidates: Vec<String> = seen
+        .into_iter()
+        .filter(|candidate| !authorizer.is_path_authorized(label, candidate))
+        .collect();
+    if candidates.is_empty() {
+        return RelinkResult {
+            authorized: Vec::new(),
+        };
+    }
+    if !dialogs.confirm_relink(&candidates) {
+        return RelinkResult {
+            authorized: Vec::new(),
+        };
+    }
+    let mut authorized = Vec::new();
+    for candidate in candidates {
+        if authorizer.authorize(label, &candidate).is_some() {
+            authorized.push(candidate);
+        }
+    }
+    RelinkResult { authorized }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file_operations::Dialogs;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A scripted `Dialogs` implementation: records consent prompts and
+    /// returns the configured answer (the `FixtureDialogs` in
+    /// `file_operations` is private to its own tests).
+    struct FixtureDialogs {
+        answer: bool,
+        prompts: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl FixtureDialogs {
+        fn new(answer: bool) -> FixtureDialogs {
+            FixtureDialogs {
+                answer,
+                prompts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn prompts(&self) -> Vec<Vec<String>> {
+            self.prompts.lock().unwrap().clone()
+        }
+    }
+
+    impl Dialogs for FixtureDialogs {
+        fn pick_open(&self) -> Option<String> {
+            None
+        }
+        fn pick_save(&self, _current: Option<&str>) -> Option<String> {
+            None
+        }
+        fn pick_image(&self) -> Option<String> {
+            None
+        }
+        fn confirm_relink(&self, candidates: &[String]) -> bool {
+            self.prompts.lock().unwrap().push(candidates.to_vec());
+            self.answer
+        }
+    }
+
+    /// Builds a recovery document with a valid image clip per path, using
+    /// the JSON escapes the renderer writes (backslashes escaped).
+    fn recovery_source(paths: &[&str]) -> String {
+        let mut source = String::from("composition(\"Recovery\").duration(10)\n");
+        for (index, path) in paths.iter().enumerate() {
+            source.push_str(&format!(
+                "image(\"c{index}\").at({index}).for(1).source({})\n",
+                serde_json::to_string(path).unwrap()
+            ));
+        }
+        source
+    }
+
+    fn recovery_value(source: &str) -> serde_json::Value {
+        serde_json::json!({ "source": source })
+    }
 
     fn unique_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -703,31 +701,6 @@ mod tests {
     }
 
     #[test]
-    fn source_literals_are_extracted_with_common_js_escapes() {
-        let source = r#"composition("Demo")
-image("Hero").at(0).for(5).source("C:\\Users\\Me\\pics\\Hero.png")
-image("Spaces").at(5).for(2).source('C:\\my dir\\a b.png')
-image("Escaped").at(7).for(1).source("C:\\tab\\name\"quoted.png")
-image("Unicode").at(8).for(1).source("C:\\Users\\\u{00e9}\\caf\u{00e9}.png")
-image("Unfinished").at(9).for(1).source("C:\\broken.png
-"#;
-        let literals = scan_source_literals(source);
-        assert_eq!(
-            literals,
-            vec![
-                r"C:\Users\Me\pics\Hero.png".to_string(),
-                r"C:\my dir\a b.png".to_string(),
-                "C:\\tab\\name\"quoted.png".to_string(),
-                "C:\\Users\\é\\café.png".to_string(),
-            ],
-            "the unterminated literal contributes nothing"
-        );
-        // Nothing to scan.
-        assert!(scan_source_literals("").is_empty());
-        assert!(scan_source_literals("composition(\"x\").duration(5)").is_empty());
-    }
-
-    #[test]
     fn app_file_routes_map_to_embedded_keys_and_mimes() {
         let (key, mime) = decide_app_file_or_root("/").unwrap();
         assert_eq!((key, mime), ("index.html", "text/html; charset=utf-8"));
@@ -773,5 +746,100 @@ image("Unfinished").at(9).for(1).source("C:\\broken.png
         assert_eq!(tokens.token_for("main"), first, "stable per label");
         assert_ne!(tokens.token_for("other"), first, "distinct per label");
         assert_eq!(first.len(), 64, "two UUID v4 hex forms");
+    }
+
+    #[test]
+    fn relink_prompts_with_remaining_candidates_and_authorizes_on_consent() {
+        let dir = unique_dir("relink-consent");
+        let a = fixture_image(&dir, "A.png");
+        let b = fixture_image(&dir, "B.png");
+        let (authorizer, _) = state();
+        // `a` is already authorized; only `b` remains a candidate.
+        authorizer.authorize("main", &a).unwrap();
+        let dialogs = FixtureDialogs::new(true);
+        let project = recovery_value(&recovery_source(&[&a, &b]));
+        let result = relink_recovery_assets("main", Some(&project), &authorizer, &dialogs);
+        assert_eq!(result.authorized, vec![b.clone()]);
+        assert_eq!(dialogs.prompts(), vec![vec![b.clone()]]);
+        assert!(authorizer.is_path_authorized("main", &b));
+    }
+
+    #[test]
+    fn relink_declining_the_dialog_authorizes_nothing() {
+        let dir = unique_dir("relink-decline");
+        let image = fixture_image(&dir, "Img.png");
+        let (authorizer, _) = state();
+        let dialogs = FixtureDialogs::new(false);
+        let project = recovery_value(&recovery_source(&[&image]));
+        let result = relink_recovery_assets("main", Some(&project), &authorizer, &dialogs);
+        assert_eq!(result.authorized, Vec::<String>::new());
+        assert_eq!(dialogs.prompts().len(), 1, "the dialog was still shown");
+        assert!(!authorizer.is_path_authorized("main", &image));
+    }
+
+    #[test]
+    fn relink_fails_closed_and_skips_the_dialog_without_candidates() {
+        let (authorizer, _) = state();
+        let dialogs = FixtureDialogs::new(true);
+        // No recovery document.
+        assert_eq!(
+            relink_recovery_assets("main", None, &authorizer, &dialogs).authorized,
+            Vec::<String>::new()
+        );
+        // A composition the engine rejects contributes no candidates.
+        let broken = serde_json::json!({ "source": "image(\"broken\").at(0).for(5)" });
+        assert_eq!(
+            relink_recovery_assets("main", Some(&broken), &authorizer, &dialogs).authorized,
+            Vec::<String>::new()
+        );
+        // A valid composition with no image clips.
+        let no_images = serde_json::json!({
+            "source": "composition(\"Clean\").duration(5)\nscene(\"bg\").at(0).for(5).look(\"orbit\")"
+        });
+        assert_eq!(
+            relink_recovery_assets("main", Some(&no_images), &authorizer, &dialogs).authorized,
+            Vec::<String>::new()
+        );
+        assert!(dialogs.prompts().is_empty());
+    }
+
+    #[test]
+    fn relink_candidates_still_pass_the_authorization_gates() {
+        let dir = unique_dir("relink-gates");
+        let (authorizer, _) = state();
+        let dialogs = FixtureDialogs::new(true);
+        // A missing file and a non-image extension both fail `authorize`
+        // even though the user consented.
+        let missing = dir.join("Missing.png").to_string_lossy().replace('/', "\\");
+        let note = dir.join("Note.txt");
+        fs::write(&note, b"not an image").unwrap();
+        let text = note.to_string_lossy().replace('/', "\\");
+        let project = recovery_value(&recovery_source(&[&missing, &text]));
+        let result = relink_recovery_assets("main", Some(&project), &authorizer, &dialogs);
+        assert_eq!(result.authorized, Vec::<String>::new());
+        let prompts = dialogs.prompts();
+        assert_eq!(prompts.len(), 1);
+        let mut listed = prompts[0].clone();
+        listed.sort();
+        let mut expected = vec![missing.clone(), text.clone()];
+        expected.sort();
+        assert_eq!(listed, expected);
+        assert!(!authorizer.is_path_authorized("main", &missing));
+        assert!(!authorizer.is_path_authorized("main", &text));
+    }
+
+    #[test]
+    fn relink_scans_lastvalid_too() {
+        let dir = unique_dir("relink-lastvalid");
+        let image = fixture_image(&dir, "Img.png");
+        let (authorizer, _) = state();
+        let dialogs = FixtureDialogs::new(true);
+        let project = serde_json::json!({
+            "source": "composition(\"Broken\").duration(5)\nimage(\"x\").at(0).for(5).wobble(1)",
+            "lastValid": recovery_source(&[&image])
+        });
+        let result = relink_recovery_assets("main", Some(&project), &authorizer, &dialogs);
+        assert_eq!(result.authorized, vec![image.clone()]);
+        assert!(authorizer.is_path_authorized("main", &image));
     }
 }

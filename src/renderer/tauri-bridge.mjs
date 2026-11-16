@@ -19,7 +19,9 @@
 // - assetToken keeps the Electron preload's synchronous getter contract;
 //   the value is the webview's capability token, delivered asynchronously
 //   from the asset_token Rust command (the getter returns "" until it
-//   arrives, which the renderer already tolerates).
+//   arrives, which the renderer already tolerates). whenAssetTokenReady
+//   is the deterministic readiness signal: it resolves once the delivery
+//   has settled, so token-dependent flows await it instead of racing.
 // - Methods whose desktop features are not migrated yet (native menus,
 //   window controls, the unsaved-change prompt, clipboard edit commands,
 //   the close handshake) deliberately return rejected promises with
@@ -61,6 +63,20 @@ export function createTauriDesktopBridge({
     get assetToken() {
       return tokenHolder?.current ?? "";
     },
+
+    // The deterministic readiness signal for the asynchronous delivery
+    // above: resolves once the asset_token invocation has settled (with
+    // the delivered token string, "" when delivery failed). Image loading
+    // and recovery relinking wait on this instead of racing the delivery;
+    // the synchronous assetToken getter contract is untouched. Electron's
+    // preload has no such method (its token is already present at boot),
+    // so the renderer treats it as optional.
+    whenAssetTokenReady: () =>
+      Promise.resolve(
+        typeof tokenHolder?.ready === "object" && tokenHolder?.ready !== null
+          ? tokenHolder.ready
+          : (tokenHolder?.current ?? ""),
+      ),
 
     // Real clipboard access through the WebView2/Chromium API. Failures
     // (denied permission, empty clipboard image, etc.) surface as genuine
@@ -192,13 +208,18 @@ if (
     window.__framecodeStartupErrors = startupErrors;
     // The capability token arrives asynchronously (the sync getter keeps
     // its contract and reads ""); a delivery failure leaves it empty, and
-    // the renderer's existing evict/retry paths cover late arrival.
+    // the renderer's existing evict/retry paths cover late arrival. The
+    // `ready` promise is the deterministic readiness signal: it resolves
+    // exactly once, with the delivered token ("" when delivery failed),
+    // so image loading and recovery relinking can await it instead of
+    // racing the delivery.
     const tokenHolder = { current: "" };
-    invoke("asset_token")
+    tokenHolder.ready = invoke("asset_token")
       .then((token) => {
         if (typeof token === "string") tokenHolder.current = token;
+        return tokenHolder.current;
       })
-      .catch(() => {});
+      .catch(() => tokenHolder.current);
     window.framecodeDesktop = Object.freeze(
       createTauriDesktopBridge({
         invoke,

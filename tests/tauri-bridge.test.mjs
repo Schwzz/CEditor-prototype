@@ -38,6 +38,12 @@ const PRELOAD_VALUE_KEYS = [
   "onCommand",
 ];
 
+// The one method the Tauri adapter adds beyond the Electron preload
+// surface: the deterministic readiness signal for the asynchronous
+// capability-token delivery. The renderer treats it as optional, so the
+// Electron path is unchanged.
+const TAURI_ONLY_KEYS = ["whenAssetTokenReady"];
+
 const NOT_YET = [
   "confirmUnsaved",
   "setDirty",
@@ -90,9 +96,10 @@ test("adapter mirrors the entire Electron preload surface", () => {
 
 test("adapter exposes nothing beyond the preload surface", () => {
   const extra = Object.keys(bridge()).filter(
-    (key) => !PRELOAD_VALUE_KEYS.includes(key),
+    (key) =>
+      !PRELOAD_VALUE_KEYS.includes(key) && !TAURI_ONLY_KEYS.includes(key),
   );
-  assert.deepEqual(extra, []);
+  assert.deepEqual(extra, [], "only the documented Tauri-only method may exist");
 });
 
 test("every bridged persistence method really invokes, none are rejected", async () => {
@@ -254,6 +261,27 @@ test("assetToken reads the token holder and starts empty", async () => {
   assert.equal(b.assetToken, "");
   holder.current = "abc123";
   assert.equal(b.assetToken, "abc123", "the getter is live, not cached");
+});
+
+test("whenAssetTokenReady resolves with the delivered token, exactly once", async () => {
+  // No holder at all: the signal still settles (with "") so callers can
+  // always await it.
+  assert.equal(await bridge().whenAssetTokenReady(), "");
+  // A holder with a ready promise: the signal reports the delivered
+  // value without racing the delivery.
+  const holder = { current: "abc123" };
+  holder.ready = Promise.resolve("abc123");
+  const b = bridge(undefined, holder);
+  assert.equal(await b.whenAssetTokenReady(), "abc123");
+  assert.equal(b.assetToken, "abc123", "the sync getter contract is intact");
+});
+
+test("whenAssetTokenReady falls back to the current holder value", async () => {
+  // A holder without a ready promise (older wiring or direct tests)
+  // still settles deterministically with what the getter reads.
+  const holder = { current: "tok" };
+  const b = bridge(undefined, holder);
+  assert.equal(await b.whenAssetTokenReady(), "tok");
 });
 
 test("writeRecovery validates through the shared core format before invoking", async () => {

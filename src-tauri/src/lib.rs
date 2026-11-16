@@ -8,6 +8,7 @@
 //! belong to later stages and are deliberately absent.
 
 mod assets;
+mod composition;
 mod file_operations;
 mod project_files;
 mod recents;
@@ -112,19 +113,23 @@ impl Default for AssetState {
 /// The Electron `scanForAssets` + `__authorizedAssets.clear()` pair: a
 /// successful project adoption drops the webview's authorized set and
 /// re-authorizes the image paths referenced by `source` and `lastValid`.
-/// The Rust scan extracts `source("…")` string literals instead of
-/// compiling the composition (the conservative approximation documented
-/// in `assets.rs`; the same extension/size/absolute-path gates bound the
-/// result, so non-image paths can never be authorized).
+/// The scan is the engine-faithful compile in `composition.rs`: only the
+/// resolved `source` paths of valid image clips are candidates, and a
+/// composition that does not compile contributes nothing (fail-closed).
+/// The same extension/size/absolute-path gates bound every authorization,
+/// so non-image paths can never be authorized.
 fn scan_project_assets(assets: &AssetState, label: &str, project: &Value) {
     let mut seen = std::collections::HashSet::new();
     for key in ["source", "lastValid"] {
         let Some(source) = project.get(key).and_then(Value::as_str) else {
             continue;
         };
-        for literal in assets::scan_source_literals(source) {
-            if seen.insert(literal.clone()) {
-                assets.authorizer.authorize(label, &literal);
+        let Ok(sources) = composition::image_clip_sources(source) else {
+            continue;
+        };
+        for path in sources {
+            if seen.insert(path.clone()) {
+                assets.authorizer.authorize(label, &path);
             }
         }
     }
@@ -473,10 +478,11 @@ fn image_import_dialog(
 
 /// The Electron `recovery:relink` handler. The recovery file this backend
 /// wrote itself is re-read here — the renderer never supplies the document
-/// — and the candidate list comes from the same conservative source-literal
-/// scan. Authorization is minted only after the user accepts the consent
-/// dialog that lists the exact paths; the response carries the original
-/// candidate strings so the renderer can evict their failed cache entries.
+/// — and the candidate list comes from the engine-faithful compile scan in
+/// `assets.rs`. Authorization is minted only after the user accepts the
+/// consent dialog that lists the exact paths; the response carries the
+/// original candidate strings so the renderer can evict their failed
+/// cache entries.
 #[tauri::command]
 fn relink_recovery_assets(
     app: tauri::AppHandle,
@@ -491,48 +497,12 @@ fn relink_recovery_assets(
             let project = with_stores(&state, |stores| {
                 stores.recovery.read().map_err(|e| e.to_string())
             })?;
-            let Some(project) = project else {
-                return Ok(RelinkResult {
-                    authorized: Vec::new(),
-                });
-            };
-            let mut seen = std::collections::HashSet::new();
-            for key in ["source", "lastValid"] {
-                if let Some(source) = project.get(key).and_then(Value::as_str) {
-                    for literal in assets::scan_source_literals(source) {
-                        seen.insert(literal);
-                    }
-                }
-            }
-            let candidates: Vec<String> = seen
-                .into_iter()
-                .filter(|candidate| {
-                    !assets
-                        .authorizer
-                        .is_path_authorized(window.label(), candidate)
-                })
-                .collect();
-            if candidates.is_empty() {
-                return Ok(RelinkResult {
-                    authorized: Vec::new(),
-                });
-            }
-            if !dialogs.confirm_relink(&candidates) {
-                return Ok(RelinkResult {
-                    authorized: Vec::new(),
-                });
-            }
-            let mut authorized = Vec::new();
-            for candidate in candidates {
-                if assets
-                    .authorizer
-                    .authorize(window.label(), &candidate)
-                    .is_some()
-                {
-                    authorized.push(candidate);
-                }
-            }
-            Ok(RelinkResult { authorized })
+            Ok(assets::relink_recovery_assets(
+                window.label(),
+                project.as_ref(),
+                &assets.authorizer,
+                &dialogs,
+            ))
         })
         .map_err(|e| e.to_string())
 }
