@@ -20,8 +20,9 @@
 //   the value is the webview's capability token, delivered asynchronously
 //   from the asset_token Rust command (the getter returns "" until it
 //   arrives, which the renderer already tolerates). whenAssetTokenReady
-//   is the deterministic readiness signal: it resolves once the delivery
-//   has settled, so token-dependent flows await it instead of racing.
+//   is the readiness signal with a real retry path: while delivery keeps
+//   failing it paces fresh asset_token re-invocations, so a later
+//   success flushes queued images without restarting the app.
 // - Methods whose desktop features are not migrated yet (native menus,
 //   window controls, the unsaved-change prompt, clipboard edit commands,
 //   the close handshake) deliberately return rejected promises with
@@ -40,9 +41,28 @@ export function createTauriDesktopBridge({
   clipboard,
   platform,
   tokenHolder,
+  tokenRetryMs = 1000,
+  delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   if (typeof invoke !== "function")
     throw new TypeError("createTauriDesktopBridge requires an invoke function");
+
+  // Paced retry state for the capability token. One attempt is one real
+  // `asset_token` invocation through the holder's refresh; concurrent
+  // awaiters share the attempt in flight, and attempts are spaced at
+  // least tokenRetryMs apart so a permanently failing delivery can never
+  // spam the IPC channel from the render loop's re-arms — while a later
+  // successful retry still flushes every queued image without any user
+  // action.
+  let lastAttemptAt = -Infinity;
+  let attemptInFlight = null;
+  const currentToken = () => tokenHolder?.current ?? "";
+  const attemptRefresh = async () => {
+    lastAttemptAt = Date.now();
+    const refresh = tokenHolder?.refresh;
+    if (typeof refresh === "function") await refresh();
+    return currentToken();
+  };
 
   const unsupported = (method) =>
     () => Promise.reject(new Error(`${method} ${NOT_IMPLEMENTED}`));
@@ -64,19 +84,32 @@ export function createTauriDesktopBridge({
       return tokenHolder?.current ?? "";
     },
 
-    // The deterministic readiness signal for the asynchronous delivery
-    // above: resolves once the asset_token invocation has settled (with
-    // the delivered token string, "" when delivery failed). Image loading
-    // and recovery relinking wait on this instead of racing the delivery;
-    // the synchronous assetToken getter contract is untouched. Electron's
-    // preload has no such method (its token is already present at boot),
-    // so the renderer treats it as optional.
-    whenAssetTokenReady: () =>
-      Promise.resolve(
-        typeof tokenHolder?.ready === "object" && tokenHolder?.ready !== null
-          ? tokenHolder.ready
-          : (tokenHolder?.current ?? ""),
-      ),
+    // The readiness signal for the asynchronous delivery above, with the
+    // real retry path: while the token is empty, each call re-invokes
+    // `asset_token` through the holder's refresh — paced tokenRetryMs
+    // apart and sharing the attempt in flight — and resolves with what
+    // the attempt delivered ("" while delivery keeps failing). A caller
+    // that re-awaits after a failure therefore drives the next attempt,
+    // so a later successful retry flushes queued images without any
+    // user action and without restarting the app. The synchronous
+    // assetToken getter contract is untouched; Electron's preload has no
+    // such method (its token is already present at boot), so the
+    // renderer treats this as optional.
+    whenAssetTokenReady: () => {
+      const current = currentToken();
+      if (current) return Promise.resolve(current);
+      if (typeof tokenHolder?.refresh !== "function")
+        return Promise.resolve(current);
+      if (!attemptInFlight) {
+        const wait = Math.max(0, tokenRetryMs - (Date.now() - lastAttemptAt));
+        attemptInFlight = delay(wait)
+          .then(attemptRefresh)
+          .finally(() => {
+            attemptInFlight = null;
+          });
+      }
+      return attemptInFlight;
+    },
 
     // Real clipboard access through the WebView2/Chromium API. Failures
     // (denied permission, empty clipboard image, etc.) surface as genuine
@@ -172,6 +205,26 @@ export function createTauriDesktopBridge({
   });
 }
 
+// The capability token holder shared by the install block and the
+// integration tests, so the shipped retry path is exactly what tests
+// exercise. `refresh` is the real retry: it re-invokes the asset_token
+// Rust command and installs a delivered token; a failure keeps the
+// empty current value and the next paced readiness await retries.
+export function createTokenHolder(invoke) {
+  const tokenHolder = { current: "" };
+  tokenHolder.refresh = async () => {
+    try {
+      const token = await invoke("asset_token");
+      if (typeof token === "string" && token) tokenHolder.current = token;
+    } catch {
+      // A failed delivery keeps the empty token; the next readiness
+      // await re-invokes. Nothing here pretends delivery succeeded.
+    }
+    return tokenHolder.current;
+  };
+  return tokenHolder;
+}
+
 // Derive the process.platform-style value the renderer can expect under
 // Electron ("win32", "darwin", "linux"). Windows is the supported release
 // target; the other branches exist so the value never misreports elsewhere.
@@ -206,20 +259,13 @@ if (
       );
     });
     window.__framecodeStartupErrors = startupErrors;
-    // The capability token arrives asynchronously (the sync getter keeps
-    // its contract and reads ""); a delivery failure leaves it empty, and
-    // the renderer's existing evict/retry paths cover late arrival. The
-    // `ready` promise is the deterministic readiness signal: it resolves
-    // exactly once, with the delivered token ("" when delivery failed),
-    // so image loading and recovery relinking can await it instead of
-    // racing the delivery.
-    const tokenHolder = { current: "" };
-    tokenHolder.ready = invoke("asset_token")
-      .then((token) => {
-        if (typeof token === "string") tokenHolder.current = token;
-        return tokenHolder.current;
-      })
-      .catch(() => tokenHolder.current);
+    // The capability token holder carries the real retry path: refresh
+    // re-invokes asset_token, and whenAssetTokenReady paces those
+    // re-invocations (see the bridge factory). The synchronous getter
+    // keeps its contract and reads "" until a token is delivered; a
+    // delivery failure leaves it empty, and the renderer's queued-image
+    // re-arms drive the retries until one succeeds.
+    const tokenHolder = createTokenHolder(invoke);
     window.framecodeDesktop = Object.freeze(
       createTauriDesktopBridge({
         invoke,

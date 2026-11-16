@@ -90,12 +90,12 @@ export class ImageCache {
 
   // Awaits the desktop's token readiness signal and, only when a usable
   // token was actually delivered, starts the real loads for every queued
-  // source. The signal deliberately resolves with "" when the delivery
-  // failed — a tokenless asset URL is always rejected — so an empty
-  // token keeps the sources queued (never a permanent failure entry)
-  // and stays recoverable: any later get() for a queued source re-awaits
-  // the desktop's current readiness signal, so a retried delivery that
-  // installs a fresh resolved signal lets the same images load.
+  // source. The signal resolves with "" while delivery keeps failing —
+  // a tokenless asset URL is always rejected — so an empty token keeps
+  // the sources queued (never a permanent failure entry). The bridge
+  // paces real asset_token re-invocations behind that signal, and any
+  // later get() for a queued source re-arms the wait, so the next
+  // successful retry loads the same images without user action.
   #waitAndFlush() {
     if (this.#waitingForToken) return;
     const ready = window.framecodeDesktop?.whenAssetTokenReady?.();

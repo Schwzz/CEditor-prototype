@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   createTauriDesktopBridge,
+  createTokenHolder,
   platformFromNavigator,
 } from "../src/renderer/tauri-bridge.mjs";
 
@@ -263,25 +264,89 @@ test("assetToken reads the token holder and starts empty", async () => {
   assert.equal(b.assetToken, "abc123", "the getter is live, not cached");
 });
 
-test("whenAssetTokenReady resolves with the delivered token, exactly once", async () => {
-  // No holder at all: the signal still settles (with "") so callers can
+test("whenAssetTokenReady reports a delivered token immediately, without invoking", async () => {
+  // Without a holder the signal still settles (with "") so callers can
   // always await it.
   assert.equal(await bridge().whenAssetTokenReady(), "");
-  // A holder with a ready promise: the signal reports the delivered
-  // value without racing the delivery.
-  const holder = { current: "abc123" };
-  holder.ready = Promise.resolve("abc123");
+  // A holder that already holds a token: immediate, and no attempt is
+  // started.
+  let refreshCalls = 0;
+  const holder = {
+    current: "abc123",
+    refresh: async () => {
+      refreshCalls++;
+      return "abc123";
+    },
+  };
   const b = bridge(undefined, holder);
   assert.equal(await b.whenAssetTokenReady(), "abc123");
+  assert.equal(refreshCalls, 0, "a delivered token needs no re-invocation");
   assert.equal(b.assetToken, "abc123", "the sync getter contract is intact");
 });
 
 test("whenAssetTokenReady falls back to the current holder value", async () => {
-  // A holder without a ready promise (older wiring or direct tests)
-  // still settles deterministically with what the getter reads.
+  // A holder without a refresh (older wiring or direct tests) still
+  // settles deterministically with what the getter reads.
   const holder = { current: "tok" };
   const b = bridge(undefined, holder);
   assert.equal(await b.whenAssetTokenReady(), "tok");
+});
+
+test("whenAssetTokenReady re-invokes asset_token until delivery succeeds", async () => {
+  // The real retry path: a failing invoke keeps the token empty, and
+  // each subsequent await drives the next attempt until one delivers.
+  let calls = 0;
+  const holder = createTokenHolder(async (command) => {
+    assert.equal(command, "asset_token");
+    calls++;
+    if (calls <= 2) throw new Error("backend not ready yet");
+    return "tok789";
+  });
+  const b = createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: null,
+    platform: "win32",
+    tokenHolder: holder,
+    tokenRetryMs: 0,
+    delay: () => Promise.resolve(),
+  });
+  assert.equal(await b.whenAssetTokenReady(), "", "first attempt fails");
+  assert.equal(b.assetToken, "", "a failed attempt never fakes a token");
+  assert.equal(await b.whenAssetTokenReady(), "", "second attempt fails");
+  assert.equal(await b.whenAssetTokenReady(), "tok789", "third attempt delivers");
+  assert.equal(calls, 3, "each await after a failure re-invoked asset_token");
+  assert.equal(b.assetToken, "tok789");
+  // After success the signal resolves immediately without invoking.
+  assert.equal(await b.whenAssetTokenReady(), "tok789");
+  assert.equal(calls, 3);
+});
+
+test("concurrent readiness awaiters share one in-flight attempt", async () => {
+  let calls = 0;
+  let release;
+  const holder = createTokenHolder(async () => {
+    calls++;
+    return new Promise((resolve) => {
+      release = () => resolve("tokShared");
+    });
+  });
+  const b = createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: null,
+    platform: "win32",
+    tokenHolder: holder,
+    tokenRetryMs: 0,
+    delay: () => Promise.resolve(),
+  });
+  const first = b.whenAssetTokenReady();
+  const second = b.whenAssetTokenReady();
+  // Let the paced attempt chain actually start the refresh before
+  // releasing the fake backend.
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  assert.equal(await first, "tokShared");
+  assert.equal(await second, "tokShared");
+  assert.equal(calls, 1, "the attempt in flight is shared, not duplicated");
 });
 
 test("writeRecovery validates through the shared core format before invoking", async () => {
