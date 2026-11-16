@@ -44,12 +44,14 @@ export class ImageCache {
     const url = this.#url(source);
     const cached = this.#cache.get(url);
     if (cached) return cached;
-    if (
-      this.#loading.has(url) ||
-      this.#failed.has(url) ||
-      this.#awaitingToken.has(source)
-    )
+    if (this.#awaitingToken.has(source)) {
+      // Still queued after a failed delivery: re-arm the wait, so a
+      // retried token delivery (a fresh readiness signal) recovers the
+      // load on the next render — no user action required.
+      this.#waitAndFlush();
       return null;
+    }
+    if (this.#loading.has(url) || this.#failed.has(url)) return null;
 
     // The synchronous assetToken getter may still read "" while the
     // async delivery is in flight. Instead of firing a request that can
@@ -83,15 +85,30 @@ export class ImageCache {
 
   #queueUntilTokenReady(source) {
     this.#awaitingToken.add(source);
+    this.#waitAndFlush();
+  }
+
+  // Awaits the desktop's token readiness signal and, only when a usable
+  // token was actually delivered, starts the real loads for every queued
+  // source. The signal deliberately resolves with "" when the delivery
+  // failed — a tokenless asset URL is always rejected — so an empty
+  // token keeps the sources queued (never a permanent failure entry)
+  // and stays recoverable: any later get() for a queued source re-awaits
+  // the desktop's current readiness signal, so a retried delivery that
+  // installs a fresh resolved signal lets the same images load.
+  #waitAndFlush() {
     if (this.#waitingForToken) return;
-    this.#waitingForToken = true;
     const ready = window.framecodeDesktop?.whenAssetTokenReady?.();
-    (typeof ready?.then === "function" ? ready : Promise.resolve())
+    if (typeof ready?.then !== "function") return;
+    this.#waitingForToken = true;
+    ready
       .catch(() => {})
       .then(() => {
+        this.#waitingForToken = false;
+        const token = window.framecodeDesktop?.assetToken || "";
+        if (!token) return;
         const queued = [...this.#awaitingToken];
         this.#awaitingToken.clear();
-        this.#waitingForToken = false;
         for (const queuedSource of queued) {
           const tokenUrl = this.#url(queuedSource);
           if (this.#cache.get(tokenUrl) || this.#loading.has(tokenUrl)) continue;

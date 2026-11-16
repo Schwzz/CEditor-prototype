@@ -1273,7 +1273,10 @@ async function boot() {
           resolve();
           // Authorization is granted only by the main process through a
           // native consent dialog; evicting prior failed entries lets
-          // restored images actually load and render.
+          // restored images actually load and render. If the capability
+          // token delivery failed, the image cache keeps these sources
+          // queued instead of firing tokenless requests, so nothing here
+          // pretends the images are usable before they really load.
           try {
             const relink = await desktop.relinkRecoveryAssets();
             for (const granted of relink?.authorized || [])

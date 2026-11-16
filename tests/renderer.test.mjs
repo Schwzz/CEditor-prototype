@@ -113,6 +113,121 @@ test("delayed token: queued images load automatically once the token arrives", a
   }
 });
 
+test("failed token delivery fires zero requests and keeps sources queued", async () => {
+  const requests = [];
+  const restore = fakeBrowserEnvironment();
+  try {
+    let token = "";
+    let deliverToken;
+    // The bridge resolves readiness with "" when delivery fails — the
+    // cache must not mistake that for a usable token.
+    const tokenReady = new Promise((resolve) => {
+      deliverToken = resolve;
+    });
+    globalThis.window.framecodeDesktop = {
+      get assetToken() {
+        return token;
+      },
+      whenAssetTokenReady: () => tokenReady,
+    };
+    globalThis.Image = class {
+      set src(url) {
+        requests.push(url);
+        queueMicrotask(() => {
+          if (url.includes("token=")) this.onload?.();
+          else this.onerror?.();
+        });
+      }
+    };
+    const cache = new ImageCache();
+    cache.get("C:\\imgs\\A.png");
+    assert.equal(requests.length, 0, "no request while awaiting");
+
+    // The delivery fails: readiness settles with an empty token.
+    deliverToken("");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      requests.length,
+      0,
+      "a failed delivery must not fire the exact 403 request we meant to prevent",
+    );
+    assert.equal(
+      cache.hasFailed("C:\\imgs\\A.png"),
+      false,
+      "the source is preserved, never poisoned with a failure entry",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("a retried token delivery recovers the queued images", async () => {
+  const requests = [];
+  const restore = fakeBrowserEnvironment();
+  try {
+    let token = "";
+    let deliverFirst;
+    let deliverRetry;
+    const firstDelivery = new Promise((resolve) => {
+      deliverFirst = resolve;
+    });
+    const retryDelivery = new Promise((resolve) => {
+      deliverRetry = resolve;
+    });
+    let ready = firstDelivery;
+    globalThis.window.framecodeDesktop = {
+      get assetToken() {
+        return token;
+      },
+      // Returns the desktop's current readiness signal; a retry
+      // installs a fresh one.
+      whenAssetTokenReady: () => ready,
+    };
+    globalThis.Image = class {
+      set src(url) {
+        requests.push(url);
+        queueMicrotask(() => {
+          if (url.includes("token=")) this.onload?.();
+          else this.onerror?.();
+        });
+      }
+    };
+    const cache = new ImageCache();
+    cache.get("C:\\imgs\\A.png");
+
+    // First delivery fails.
+    deliverFirst("");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(requests.length, 0, "failed delivery fires nothing");
+
+    // The desktop retries: a new token and a fresh readiness signal.
+    token = "tok456";
+    ready = retryDelivery;
+    // The next render calls get() again — the queue re-arms and the
+    // recovered delivery starts the real load.
+    cache.get("C:\\imgs\\A.png");
+    deliverRetry("tok456");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(requests.length, 1, "exactly one real load fired");
+    assert.ok(
+      requests[0].includes("token=tok456"),
+      "the recovered load carries the delivered token",
+    );
+    assert.ok(
+      cache.get("C:\\imgs\\A.png"),
+      "the image is cached after the retry recovered it",
+    );
+    assert.equal(cache.hasFailed("C:\\imgs\\A.png"), false);
+  } finally {
+    restore();
+  }
+});
+
 // Installs the window/location/Image globals renderer.mjs's ImageCache
 // reads, and restores the previous values afterwards.
 function fakeBrowserEnvironment() {
