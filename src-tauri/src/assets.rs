@@ -104,6 +104,17 @@ fn extension_of(path: &Path) -> Option<String> {
 #[derive(Default)]
 pub struct AssetAuthorizer {
     sets: Mutex<HashMap<String, HashSet<String>>>,
+    /// Canonical identities (the `real_path` form) of the regular files
+    /// each webview authorized. The resolve+fold keys above keep whatever
+    /// spelling the grant came through, while the realpath re-check
+    /// canonicalizes: Windows spellings like 8.3 short names (the CI
+    /// runner's `RUNNER~1` temp directory) or junctions survive in the
+    /// key but vanish in the canonical form, so the same authorized file
+    /// also needs an identity-based lookup. Symlink grants record no
+    /// alias: authorizing a link must not vouch for its target, matching
+    /// the Electron re-check where only the set membership of the
+    /// resolved target decides.
+    canonical: Mutex<HashMap<String, HashSet<String>>>,
 }
 
 impl AssetAuthorizer {
@@ -121,6 +132,18 @@ impl AssetAuthorizer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Some(operation(sets.entry(label.to_string()).or_default()))
+    }
+
+    fn with_canonical<R>(
+        &self,
+        label: &str,
+        operation: impl FnOnce(&mut HashSet<String>) -> R,
+    ) -> Option<R> {
+        let mut canonical = self
+            .canonical
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Some(operation(canonical.entry(label.to_string()).or_default()))
     }
 
     /// Authorizes one file for a webview if it exists, is a regular file
@@ -143,12 +166,39 @@ impl AssetAuthorizer {
         {
             return None;
         }
-        self.with_set(label, |set| set.insert(normalized.clone()))?;
+        let _ = self.with_set(label, |set| set.insert(normalized.clone()));
+        // Record the canonical identity for the realpath re-check, but
+        // only for regular files: a symlink grant's canonical form is its
+        // target, and recording that would let the link's authorization
+        // serve the target path directly — the Electron re-check refuses
+        // exactly that (the set must contain the resolved spelling
+        // itself).
+        let is_symlink = std::fs::symlink_metadata(path)
+            .map(|meta| meta.is_symlink())
+            .unwrap_or(false);
+        if !is_symlink {
+            if let Some(canonical) = real_path(path) {
+                self.with_canonical(label, |set| {
+                    set.insert(canonical);
+                });
+            }
+        }
         Some(normalized)
     }
 
     pub fn is_authorized(&self, label: &str, normalized: &str) -> bool {
         self.with_set(label, |set| set.contains(normalized))
+            .unwrap_or(false)
+    }
+
+    /// Whether the canonical real path is the canonical identity of a
+    /// regular file this webview authorized — the identity-based lookup
+    /// the realpath re-check needs when the grant's spelling canonicalizes
+    /// differently (see the `canonical` field). A miss here falls back to
+    /// the plain set lookup, so Electron's string-compare semantics are
+    /// preserved first.
+    pub fn is_real_authorized(&self, label: &str, real: &str) -> bool {
+        self.with_canonical(label, |set| set.contains(real))
             .unwrap_or(false)
     }
 
@@ -163,6 +213,7 @@ impl AssetAuthorizer {
     /// `window.__authorizedAssets.clear()` on project adoption).
     pub fn clear(&self, label: &str) {
         let _ = self.with_set(label, HashSet::clear);
+        let _ = self.with_canonical(label, HashSet::clear);
     }
 }
 
@@ -263,8 +314,16 @@ pub fn decide_asset_request(
         // and is in the same webview's authorized set (so a link pointing
         // at an authorized file is servable, while any other miss —
         // including a non-symlink path whose realpath is itself — is 403).
+        // The identity lookup second: when the grant's spelling
+        // canonicalizes differently (Windows 8.3 short names, junctions),
+        // the resolved target IS the authorized file even though the
+        // string keys no longer match.
         || real_path(Path::new(raw))
-            .map(|real| real != normalized && authorizer.is_authorized(label, &real))
+            .map(|real| {
+                real != normalized
+                    && (authorizer.is_authorized(label, &real)
+                        || authorizer.is_real_authorized(label, &real))
+            })
             .unwrap_or(false);
     if !authorized {
         return AssetDecision::Reject(403);
@@ -696,6 +755,87 @@ mod tests {
             ),
             AssetDecision::Reject(403),
             "an unauthorized symlink must not inherit its target's authorization"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlink_recheck_survives_a_spelling_canonicalize_rewrites() {
+        // Windows CI's %TEMP% contains an 8.3 short name (`RUNNER~1`): the
+        // resolve+fold authorization key keeps that spelling, while the
+        // re-check's realpath canonicalizes it to the long form, so a
+        // link to an authorized file missed the lookup and got 403. A
+        // doubled separator reproduces the same divergence deterministically
+        // in process — the resolve+fold key keeps it, canonicalize
+        // collapses it.
+        let dir = unique_dir("symlink-spelling");
+        let image = fixture_image(&dir, "Target.png");
+        let rewritten = format!("{}\\\\{}", dir.display(), "Target.png");
+        let link = dir.join("Link.png");
+        std::os::windows::fs::symlink_file(Path::new(&image), &link).unwrap();
+        let (authorizer, tokens) = state();
+        let token = tokens.token_for("main");
+        assert!(authorizer.authorize("main", &rewritten).is_some());
+        // The re-check grants through the canonical identity of the same
+        // authorized regular file.
+        assert!(matches!(
+            decide_asset_request(
+                "GET",
+                Some(&link.to_string_lossy()),
+                Some(&token),
+                "main",
+                &authorizer,
+                &tokens
+            ),
+            AssetDecision::Serve { .. }
+        ));
+        // The rewritten spelling itself still serves through the plain
+        // key, the direct hit Electron's path.resolve produces.
+        assert!(matches!(
+            decide_asset_request(
+                "GET",
+                Some(&rewritten),
+                Some(&token),
+                "main",
+                &authorizer,
+                &tokens
+            ),
+            AssetDecision::Serve { .. }
+        ));
+        // A symlink grant records no canonical alias: authorizing the
+        // link (even through the rewritten spelling) still does not make
+        // the target path servable.
+        let rewritten_link = format!("{}\\\\{}", dir.display(), "Link.png");
+        let (authorizer, tokens) = state();
+        let token = tokens.token_for("main");
+        assert!(authorizer.authorize("main", &rewritten_link).is_some());
+        assert_eq!(
+            decide_asset_request(
+                "GET",
+                Some(&image),
+                Some(&token),
+                "main",
+                &authorizer,
+                &tokens
+            ),
+            AssetDecision::Reject(403),
+            "a symlink grant must not vouch for its target's canonical path"
+        );
+        // And a link to a never-authorized file stays rejected.
+        let stranger = fixture_image(&dir, "Stranger.png");
+        let stranger_link = dir.join("StrangerLink.png");
+        std::os::windows::fs::symlink_file(Path::new(&stranger), &stranger_link).unwrap();
+        assert_eq!(
+            decide_asset_request(
+                "GET",
+                Some(&stranger_link.to_string_lossy()),
+                Some(&token),
+                "main",
+                &authorizer,
+                &tokens
+            ),
+            AssetDecision::Reject(403)
         );
         fs::remove_dir_all(&dir).unwrap();
     }
