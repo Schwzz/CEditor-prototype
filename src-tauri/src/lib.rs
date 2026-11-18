@@ -4,8 +4,9 @@
 //! asset authorization and serving, recovery relinking) joined the Stage 2
 //! persistence backend and the Stage 3 file operations, all ported from the
 //! Electron main process with identical on-disk formats, validation, and
-//! security model. Native menus, window controls, and the close handshake
-//! belong to later stages and are deliberately absent.
+//! security model. Stage 5 completes the migration with the native window
+//! lifecycle: menus, window titles, the unsaved-change prompt and the
+//! close handshake (window_lifecycle.rs).
 
 mod assets;
 mod composition;
@@ -14,6 +15,7 @@ mod project_files;
 mod recents;
 mod recovery;
 mod settings;
+pub mod window_lifecycle;
 
 use assets::{AssetAuthorizer, CapabilityTokens, RelinkResult};
 use file_operations::{
@@ -27,6 +29,10 @@ use settings::{AppSettings, Settings};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
+use window_lifecycle::{
+    app_code, app_stage, app_templates, install_close_handshake, install_menu,
+    project_confirm_unsaved, project_dirty, window_finish_close, WindowLifecycle,
+};
 
 #[derive(Serialize)]
 pub struct DesktopInfo {
@@ -36,8 +42,8 @@ pub struct DesktopInfo {
 
 /// Stage 1 proof-of-life command: the frontend invokes this once at boot to
 /// demonstrate the render-to-Rust path. The identity comes from the Tauri
-/// config (productName/version), mirroring Electron's package.json source of
-/// truth in desktop/main.cjs.
+/// config (productName/version), the same identity the retired Electron
+/// main process took from package.json.
 #[tauri::command]
 fn desktop_info(app: tauri::AppHandle) -> DesktopInfo {
     // Visible in `tauri dev` output (debug console attached): each line marks
@@ -528,6 +534,12 @@ pub fn run() {
             asset_token,
             image_import_dialog,
             relink_recovery_assets,
+            project_dirty,
+            app_stage,
+            app_code,
+            app_templates,
+            project_confirm_unsaved,
+            window_finish_close,
         ])
         .plugin(tauri_plugin_dialog::init())
         // Stage 4: the overridden `tauri` protocol serves the app files and
@@ -548,6 +560,19 @@ pub fn run() {
             app.manage(persistence);
             app.manage(FileOperations::new());
             app.manage(AssetState::default());
+            app.manage(WindowLifecycle::default());
+            // Stage 5 native chrome: menus start on Home exactly like the
+            // Electron `installMenu(window, "home")` boot, the menu-event
+            // handler forwards renderer commands, and the close handshake
+            // guards the main window.
+            if let Some(window) = app.get_webview_window(window_lifecycle::MAIN_WINDOW_LABEL) {
+                install_close_handshake(&app.handle().clone(), &window);
+            }
+            install_menu(&app.handle().clone())
+                .map_err(|e| format!("Framecode could not install its native menu: {e}"))?;
+            app.on_menu_event(|app, event| {
+                window_lifecycle::handle_menu_event(app, event.id().0.as_str());
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
