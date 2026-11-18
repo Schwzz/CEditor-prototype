@@ -39,20 +39,16 @@ const PRELOAD_VALUE_KEYS = [
   "onCommand",
 ];
 
-// The one method the Tauri adapter adds beyond the Electron preload
-// surface: the deterministic readiness signal for the asynchronous
-// capability-token delivery. The renderer treats it as optional, so the
-// Electron path is unchanged.
-const TAURI_ONLY_KEYS = ["whenAssetTokenReady"];
+// The Tauri-only additions beyond the Electron preload surface:
+// whenAssetTokenReady is the readiness signal for the asynchronous
+// capability-token delivery, and setTemplates delivers the template names
+// for the native Templates menu (the engine stays JavaScript). The
+// renderer treats both as part of the adapter contract.
+const TAURI_ONLY_KEYS = ["whenAssetTokenReady", "setTemplates"];
 
-const NOT_YET = [
-  "confirmUnsaved",
-  "setDirty",
-  "setStage",
-  "setCodePanel",
-  "editClipboard",
-  "finishClose",
-];
+// Stage 5: the window lifecycle joins the bridged surface — none of the
+// Electron preload methods is a stub anymore. (Stage 2 persistence and
+// Stage 3 file operations were bridged earlier.)
 
 // Stage 2: persistence methods now invoke real Rust commands.
 const BRIDGED = [
@@ -146,18 +142,46 @@ test("appInfo bridges to the desktop_info Rust command", async () => {
   assert.deepEqual(await b.appInfo(), { command: "desktop_info", args: undefined });
 });
 
-test("unsupported methods reject truthfully instead of faking success", async () => {
+test("stage 5 window lifecycle methods invoke the real Rust commands", async () => {
   const b = bridge();
-  for (const method of NOT_YET) {
-    await assert.rejects(
-      b[method](),
-      (error) =>
-        error instanceof Error &&
-        error.message.startsWith(method) &&
-        error.message.includes("not implemented in the Tauri shell yet"),
-      `${method} must reject with an explicit not-implemented error`,
-    );
-  }
+  assert.deepEqual(await b.confirmUnsaved(), {
+    command: "project_confirm_unsaved",
+    args: undefined,
+  });
+  assert.deepEqual(await b.setDirty(true, "Demo"), {
+    command: "project_dirty",
+    args: { dirty: true, name: "Demo" },
+  });
+  assert.deepEqual(await b.setStage("editor"), {
+    command: "app_stage",
+    args: { stage: "editor" },
+  });
+  assert.deepEqual(await b.setCodePanel(true), {
+    command: "app_code",
+    args: { open: true },
+  });
+  assert.deepEqual(await b.finishClose(), {
+    command: "window_finish_close",
+    args: undefined,
+  });
+});
+
+test("setTemplates delivers the renderer's template names to the native menu", async () => {
+  const b = bridge();
+  assert.deepEqual(await b.setTemplates(["Demo", "Grid"]), {
+    command: "app_templates",
+    args: { names: ["Demo", "Grid"] },
+  });
+  // Non-arrays degrade to an empty menu section instead of crashing the
+  // Rust command; names are delivered as strings.
+  assert.deepEqual(await b.setTemplates(null), {
+    command: "app_templates",
+    args: { names: [] },
+  });
+  assert.deepEqual(await b.setTemplates(["A", 3, null]), {
+    command: "app_templates",
+    args: { names: ["A", "3", "null"] },
+  });
 });
 
 test("settings methods invoke the real Rust commands", async () => {
@@ -426,14 +450,175 @@ test("clipboard methods reject when no clipboard is available", async () => {
   await assert.rejects(b.writeClipboard("x"), /not implemented/);
 });
 
-test("onCommand delivers nothing yet and returns a working unsubscribe", async () => {
+test("onCommand throws on non-function listeners like the preload", () => {
+  const b = bridge();
+  assert.throws(() => b.onCommand("not a function"), TypeError);
+});
+
+test("onCommand without an event channel stays inert but valid", async () => {
   const b = bridge();
   let calls = 0;
   const unsubscribe = b.onCommand(() => calls++);
   assert.equal(typeof unsubscribe, "function");
   assert.doesNotThrow(unsubscribe);
   assert.equal(calls, 0);
-  assert.throws(() => b.onCommand("not a function"), TypeError);
+  // Unsubscribing twice stays harmless.
+  assert.doesNotThrow(unsubscribe);
+});
+
+const commandBridge = (listen) =>
+  createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: null,
+    platform: "win32",
+    listen,
+    document: null,
+  });
+
+const fakeListen = (impl) => {
+  const state = { handlers: [], unlistens: 0 };
+  state.listen = (name, handler) => {
+    assert.equal(name, "desktop:command");
+    return Promise.resolve(impl(state, handler));
+  };
+  return state;
+};
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("onCommand delivers native menu commands to every listener", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  const seen = [];
+  const stop = b.onCommand((name) => seen.push("first:" + name));
+  b.onCommand((name) => seen.push("second:" + name));
+  await settle();
+  assert.equal(state.handlers.length, 1, "one shared subscription");
+  state.handlers[0]({ payload: "save" });
+  state.handlers[0]({ payload: "template:Demo" });
+  assert.deepEqual(seen, ["first:save", "second:save", "first:template:Demo", "second:template:Demo"]);
+  // The unsubscribe stops only that listener's deliveries.
+  stop();
+  state.handlers[0]({ payload: "open" });
+  assert.deepEqual(
+    seen,
+    ["first:save", "second:save", "first:template:Demo", "second:template:Demo", "second:open"],
+  );
+});
+
+test("the last onCommand unsubscribe tears the shared subscription down", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  const first = b.onCommand(() => {});
+  const second = b.onCommand(() => {});
+  await settle();
+  assert.equal(state.unlistens, 0);
+  first();
+  await settle();
+  assert.equal(state.unlistens, 0, "a live listener keeps the channel open");
+  second();
+  await settle();
+  assert.equal(state.unlistens, 1, "the last unsubscribe unsubscribes in Rust");
+  // Re-subscribing after a teardown starts a fresh subscription.
+  const third = b.onCommand(() => {});
+  await settle();
+  assert.equal(state.handlers.length, 2, "a fresh channel subscription");
+  third();
+  await settle();
+  assert.equal(state.unlistens, 2);
+});
+
+test("unsubscribing before the subscription resolves still tears it down", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  const unsubscribe = b.onCommand(() => {});
+  unsubscribe(); // before the listen promise resolved
+  await settle();
+  assert.equal(state.unlistens, 1, "the channel never stays live with no consumers");
+});
+
+test("a duplicate registration of the same listener delivers once", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  let calls = 0;
+  const listener = () => calls++;
+  const stopA = b.onCommand(listener);
+  const stopB = b.onCommand(listener);
+  await settle();
+  state.handlers[0]({ payload: "save" });
+  assert.equal(calls, 1, "the set dedupes, so no double delivery");
+  stopA();
+  state.handlers[0]({ payload: "open" });
+  assert.equal(calls, 1, "the first unsubscribe already removed the listener");
+  stopB(); // harmless double unsubscribe
+  await settle();
+  assert.equal(state.unlistens, 1);
+});
+
+test("non-string payloads never reach the listeners", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  let calls = 0;
+  b.onCommand(() => calls++);
+  await settle();
+  state.handlers[0]({ payload: 42 });
+  state.handlers[0](null);
+  state.handlers[0]({});
+  assert.equal(calls, 0);
+});
+
+test("one broken listener never starves the others", async () => {
+  const state = fakeListen((_state, handler) => {
+    _state.handlers.push(handler);
+    return () => _state.unlistens++;
+  });
+  const b = commandBridge(state.listen);
+  const seen = [];
+  b.onCommand(() => {
+    throw new Error("listener bug");
+  });
+  b.onCommand((name) => seen.push(name));
+  await settle();
+  state.handlers[0]({ payload: "save" });
+  assert.deepEqual(seen, ["save"]);
+});
+
+test("a failed subscription is retried by the next registration", async () => {
+  let attempts = 0;
+  const state = { handlers: [], unlistens: 0 };
+  state.listen = (name, handler) => {
+    assert.equal(name, "desktop:command");
+    attempts++;
+    if (attempts === 1) return Promise.reject(new Error("channel refused"));
+    state.handlers.push(handler);
+    return Promise.resolve(() => state.unlistens++);
+  };
+  const b = commandBridge(state.listen);
+  const seen = [];
+  b.onCommand((name) => seen.push(name));
+  await settle();
+  assert.equal(state.handlers.length, 0, "the first attempt failed");
+  // The next registration drives a fresh subscription attempt.
+  b.onCommand((name) => seen.push("retry:" + name));
+  await settle();
+  assert.equal(state.handlers.length, 1, "the retry subscribed");
+  state.handlers[0]({ payload: "save" });
+  assert.deepEqual(seen, ["save", "retry:save"]);
 });
 
 test("platformFromNavigator mirrors Electron process.platform values", () => {
@@ -447,4 +632,204 @@ test("platformFromNavigator mirrors Electron process.platform values", () => {
   );
   assert.equal(platformFromNavigator({ platform: "", userAgent: "Linux x86_64" }), "linux");
   assert.equal(platformFromNavigator({ platform: "", userAgent: "" }), "unknown");
+});
+
+// Stage 5 editClipboard: a minimal fake document so the editing commands
+// are testable in Node without a real DOM.
+const domBridge = (doc, clipboard) =>
+  createTauriDesktopBridge({
+    invoke: async () => ({}),
+    clipboard: clipboard ?? null,
+    platform: "win32",
+    document: doc,
+  });
+
+const trackingDoc = (execResult = true) => {
+  const commands = [];
+  return {
+    commands,
+    doc: {
+      execCommand: (action, a, b) => {
+        commands.push([action, a, b]);
+        return typeof execResult === "function" ? execResult(action) : execResult;
+      },
+      activeElement: null,
+    },
+  };
+};
+
+test("editClipboard rejects unknown clipboard actions", async () => {
+  const { doc } = trackingDoc();
+  doc.activeElement = { tagName: "DIV" };
+  const b = domBridge(doc);
+  await assert.rejects(b.editClipboard("selectall"), /Unknown clipboard action/);
+});
+
+test("editClipboard needs a document to run the editing commands", async () => {
+  const b = domBridge(null);
+  await assert.rejects(b.editClipboard("cut"), /not implemented/);
+});
+
+test("editClipboard runs the web-native cut/copy commands", async () => {
+  const { doc, commands } = trackingDoc();
+  doc.activeElement = { tagName: "DIV" };
+  const b = domBridge(doc);
+  await b.editClipboard("cut");
+  await b.editClipboard("copy");
+  assert.deepEqual(commands, [["cut", undefined, undefined], ["copy", undefined, undefined]]);
+});
+
+test("editClipboard reports a refused cut/copy as a real error", async () => {
+  const { doc, commands } = trackingDoc(() => false);
+  doc.activeElement = { tagName: "DIV" };
+  const b = domBridge(doc);
+  await assert.rejects(b.editClipboard("copy"), /copy command was refused/);
+  assert.equal(commands.length, 1, "the refusal is not retried or faked");
+});
+
+test("editClipboard paste needs a clipboard to read from", async () => {
+  const { doc } = trackingDoc();
+  doc.activeElement = { tagName: "DIV" };
+  const b = domBridge(doc);
+  await assert.rejects(b.editClipboard("paste"), /readClipboard/);
+});
+// The DOM ClipboardEvent/DataTransfer globals are absent in Node, so the
+// paste tests inject stand-ins for exactly the API surface the bridge
+// uses, restored afterwards.
+const withFakeClipboardEvents = async (run) => {
+  class FakeDataTransfer {
+    constructor() {
+      this.store = new Map();
+    }
+    setData(type, value) {
+      this.store.set(type, value);
+    }
+  }
+  class FakeClipboardEvent {
+    constructor(type, init) {
+      this.type = type;
+      this.bubbles = init?.bubbles;
+      this.cancelable = init?.cancelable;
+      this.clipboardData = init?.clipboardData ?? null;
+      this.defaultPrevented = false;
+    }
+  }
+  const savedDataTransfer = globalThis.DataTransfer;
+  const savedClipboardEvent = globalThis.ClipboardEvent;
+  globalThis.DataTransfer = FakeDataTransfer;
+  globalThis.ClipboardEvent = FakeClipboardEvent;
+  try {
+    await run();
+  } finally {
+    globalThis.DataTransfer = savedDataTransfer;
+    globalThis.ClipboardEvent = savedClipboardEvent;
+  }
+};
+
+test("editClipboard paste delivers a real paste event with the clipboard text", async () => {
+  await withFakeClipboardEvents(async () => {
+    const dispatched = [];
+    const { doc, commands } = trackingDoc(() => {
+      throw new Error("paste must not use execCommand first");
+    });
+    const target = {
+      tagName: "DIV",
+      isContentEditable: true,
+      // The target consumes the event, like CodeMirror's paste handler.
+      dispatchEvent: (event) => {
+        dispatched.push(event);
+        event.defaultPrevented = true;
+      },
+    };
+    doc.activeElement = target;
+    const b = domBridge(doc, { readText: async () => "pasted text" });
+    await b.editClipboard("paste");
+    assert.equal(dispatched.length, 1, "exactly one paste event");
+    assert.equal(dispatched[0].type, "paste");
+    assert.equal(dispatched[0].bubbles, true);
+    assert.equal(
+      dispatched[0].clipboardData?.store?.get("text/plain"),
+      "pasted text",
+      "the event carries the real clipboard text",
+    );
+    assert.equal(commands.length, 0, "a consumed paste needs no fallback");
+  });
+});
+
+test("paste falls back to setRangeText when an input ignores the event", async () => {
+  await withFakeClipboardEvents(async () => {
+    const { doc, commands } = trackingDoc();
+    const edits = [];
+    const events = [];
+    doc.activeElement = {
+      tagName: "TEXTAREA",
+      selectionStart: 2,
+      selectionEnd: 5,
+      value: "abcdef",
+      setRangeText: (text, start, end, mode) =>
+        edits.push([text, start, end, mode]),
+      dispatchEvent: (event) => events.push(event),
+    };
+    const b = domBridge(doc, { readText: async () => "PASTE" });
+    await b.editClipboard("paste");
+    assert.deepEqual(edits, [["PASTE", 2, 5, "end"]], "the field was edited");
+    assert.equal(events.length, 2, "the paste event and the follow-up input event");
+    assert.equal(events[0].type, "paste");
+    assert.equal(events[1].type, "input");
+    assert.equal(events[1].bubbles, true);
+    assert.equal(commands.length, 0, "no execCommand on plain fields");
+  });
+});
+
+test("paste falls back to insertText on contentEditable", async () => {
+  await withFakeClipboardEvents(async () => {
+    const { doc, commands } = trackingDoc();
+    doc.activeElement = {
+      tagName: "DIV",
+      isContentEditable: true,
+      dispatchEvent: () => {}, // nobody handles the event
+    };
+    const b = domBridge(doc, { readText: async () => "PASTE" });
+    await b.editClipboard("paste");
+    assert.deepEqual(
+      commands,
+      [["insertText", false, "PASTE"]],
+      "the contentEditable got the text via the editing command",
+    );
+  });
+});
+
+test("paste without a paste-capable target refuses truthfully", async () => {
+  await withFakeClipboardEvents(async () => {
+    const { doc, commands } = trackingDoc();
+    doc.activeElement = {
+      tagName: "BODY",
+      isContentEditable: false,
+      dispatchEvent: () => {},
+    };
+    const b = domBridge(doc, { readText: async () => "PASTE" });
+    await assert.rejects(
+      b.editClipboard("paste"),
+      /Nothing focused can accept a paste/,
+    );
+    assert.equal(commands.length, 0);
+  });
+});
+
+test("a paste consumed by the target's own handler runs no fallback", async () => {
+  await withFakeClipboardEvents(async () => {
+    const { doc, commands } = trackingDoc();
+    // A CodeMirror-style target: its paste handler consumes the event
+    // (preventDefault), so the bridge must not double-edit the field.
+    doc.activeElement = {
+      tagName: "DIV",
+      isContentEditable: true,
+      dispatchEvent: (event) => {
+        event.defaultPrevented = true;
+      },
+    };
+    const b = domBridge(doc, { readText: async () => "PASTE" });
+    await b.editClipboard("paste");
+    assert.equal(commands.length, 0);
+  });
 });

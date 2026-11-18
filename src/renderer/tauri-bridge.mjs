@@ -1,8 +1,8 @@
-// Stage 4 of the Tauri migration: a truthful desktop adapter for the
-// existing frontend. Electron's preload (desktop/preload.cjs) installs
-// window.framecodeDesktop; this module installs an equivalent adapter only
-// inside the Tauri webview (window.__TAURI__), so the editor boots without
-// changing the Electron path at all.
+// Stage 5 of the Tauri migration: the truthful desktop adapter for the
+// existing frontend. The retired Electron preload (desktop/preload.cjs)
+// used to install window.framecodeDesktop; this module installs the same
+// contract only inside the Tauri webview (window.__TAURI__), so the editor
+// boots without changing the renderer contract at all.
 //
 // Truthfulness policy:
 // - Methods already implemented by the Tauri shell are bridged for real:
@@ -10,12 +10,19 @@
 //   navigator.clipboard; persistence (settings, recents, recovery) ->
 //   their Rust commands since Stage 2; the file operations (Open dialog,
 //   Open Recent, New, Save, Save As) -> their Rust commands since Stage 3;
-//   and since Stage 4 image import and recovery relinking -> the
+//   since Stage 4 image import and recovery relinking -> the
 //   image_import_dialog / relink_recovery_assets Rust commands (the
-//   renderer never authorizes anything itself). Recovery write/read and
-//   save validate through the shared JavaScript core format module
-//   (src/core/project-format.mjs) first, so the composition engine still
-//   performs the semantic validation the Electron main process did.
+//   renderer never authorizes anything itself); and since Stage 5 the
+//   window lifecycle (confirmUnsaved, setDirty, setStage, setCodePanel,
+//   finishClose, setTemplates) -> their window_lifecycle Rust commands,
+//   which drive the native title bar, menus, and close handshake.
+// - onCommand delivers the native menu commands the Rust shell emits as
+//   `desktop:command` events (the same channel Electron's main process
+//   used), through one shared subscription fanned out to every listener.
+// - editClipboard runs the web-native editing commands against the focused
+//   element (the same behavior Electron's webContents cut/copy/paste had),
+//   with a paste path that hands the actual clipboard text to whatever the
+//   user has focused.
 // - assetToken keeps the Electron preload's synchronous getter contract;
 //   the value is the webview's capability token, delivered asynchronously
 //   from the asset_token Rust command (the getter returns "" until it
@@ -23,18 +30,17 @@
 //   is the readiness signal with a real retry path: while delivery keeps
 //   failing it paces fresh asset_token re-invocations, so a later
 //   success flushes queued images without restarting the app.
-// - Methods whose desktop features are not migrated yet (native menus,
-//   window controls, the unsaved-change prompt, clipboard edit commands,
-//   the close handshake) deliberately return rejected promises with
-//   explicit messages. The renderer's boot paths already handle failures
-//   defensively (safe defaults + honest toasts), so the truthful rejection
-//   keeps the app alive while never pretending a file operation succeeded.
-// - onCommand returns a working unsubscribe; nothing fires because the
-//   Tauri shell has no native menus yet (a later stage).
+// - Anything whose backing feature is genuinely absent (no clipboard
+//   object, no event channel, no document) rejects explicitly with a
+//   message, never faking success.
 
 import { encodeProject, decodeProject } from "../core/project-format.mjs";
 
 const NOT_IMPLEMENTED = "is not implemented in the Tauri shell yet";
+
+/// The event the Rust shell emits native menu commands on (the same name
+/// Electron's main process sent them on).
+const COMMAND_EVENT = "desktop:command";
 
 export function createTauriDesktopBridge({
   invoke,
@@ -43,6 +49,13 @@ export function createTauriDesktopBridge({
   tokenHolder,
   tokenRetryMs = 1000,
   delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // The Tauri event channel (window.__TAURI__.event.listen). Without it
+  // onCommand still returns a working unsubscribe, but no command can
+  // ever arrive — truthful, like a menu bar that never fires.
+  listen,
+  // The document the editing commands run against. Node tests inject a
+  // fake; the webview install passes the real one by default.
+  document: doc = globalThis.document,
 }) {
   if (typeof invoke !== "function")
     throw new TypeError("createTauriDesktopBridge requires an invoke function");
@@ -66,6 +79,77 @@ export function createTauriDesktopBridge({
 
   const unsupported = (method) =>
     () => Promise.reject(new Error(`${method} ${NOT_IMPLEMENTED}`));
+
+  // Native menu commands (the `desktop:command` channel) fan out through
+  // one shared Tauri event subscription no matter how many listeners are
+  // registered — a duplicate subscription per listener would deliver each
+  // command multiple times. The subscription starts lazily on the first
+  // listener and is torn down when the last one leaves, so an app that
+  // unsubscribes everything really stops the IPC traffic.
+  const commandListeners = new Set();
+  // The live unlisten function once the subscription resolved; null while
+  // none exists. A listener that unsubscribes before the subscription
+  // resolves is handled by the resolution callback (which sees the empty
+  // set and immediately tears the channel back down).
+  let commandUnlisten = null;
+  // True between starting the subscription and its promise resolving, so
+  // concurrent onCommand calls share one attempt instead of racing.
+  let commandSubscribing = false;
+
+  const deliverCommand = (event) => {
+    const command = event?.payload;
+    if (typeof command !== "string") return;
+    // Copy so a listener that (un)subscribes inside its own callback never
+    // distorts the iteration.
+    for (const listener of [...commandListeners]) {
+      try {
+        listener(command);
+      } catch {
+        // One broken listener never starves the others (the renderer's
+        // own command handler is async and rejects into toasts).
+      }
+    }
+  };
+
+  const maybeTearDownSubscription = () => {
+    if (commandListeners.size > 0 || commandSubscribing) return;
+    const unlistenFn = commandUnlisten;
+    if (!unlistenFn) return;
+    commandUnlisten = null;
+    try {
+      unlistenFn();
+    } catch {
+      // An already-dead channel needs no second teardown.
+    }
+  };
+
+  const ensureCommandSubscription = () => {
+    if (commandListeners.size === 0) return;
+    if (commandUnlisten || commandSubscribing) return;
+    if (typeof listen !== "function") return;
+    commandSubscribing = true;
+    Promise.resolve()
+      .then(() => listen(COMMAND_EVENT, deliverCommand))
+      .then((unlistenFn) => {
+        commandSubscribing = false;
+        if (commandListeners.size === 0) {
+          // Every listener unsubscribed while subscribing; the channel
+          // never had consumers, so it ends immediately.
+          try {
+            unlistenFn();
+          } catch {
+            // Best effort teardown.
+          }
+          return;
+        }
+        commandUnlisten = unlistenFn;
+      })
+      .catch(() => {
+        commandSubscribing = false;
+        // A failed subscription stays failed; the next onCommand call
+        // re-attempts it instead of leaving listeners silently deaf.
+      });
+  };
 
   return Object.freeze({
     // Bridged truthfully: same {name, version} shape as Electron's
@@ -125,13 +209,22 @@ export function createTauriDesktopBridge({
       return clipboard.writeText(text);
     },
 
-    // Native menu commands (File/Edit/etc.) do not exist in the Tauri
-    // shell yet, so no command is ever delivered; the returned function
-    // genuinely unsubscribes (a no-op, like an already-removed listener).
+    // Stage 5: the real native menu channel. Commands the Rust shell's
+    // menus emit (File/Edit/View/Templates/Help — the same strings the
+    // Electron main process sent) arrive here through one shared
+    // `desktop:command` subscription; the returned function synchronously
+    // unsubscribes, and the last unsubscribe tears the subscription down.
     onCommand(listener) {
       if (typeof listener !== "function")
         throw new TypeError("onCommand requires a listener function");
-      return () => {};
+      commandListeners.add(listener);
+      ensureCommandSubscription();
+      return () => {
+        // A Set dedupes, so double registration and double unregistration
+        // of the same listener stay one subscription and one delivery.
+        commandListeners.delete(listener);
+        maybeTearDownSubscription();
+      };
     },
 
     // File operations bridged for real since Stage 3 (the Rust commands
@@ -193,15 +286,89 @@ export function createTauriDesktopBridge({
     importImage: () => invoke("image_import_dialog"),
     relinkRecoveryAssets: () => invoke("relink_recovery_assets"),
 
-    // Not migrated yet (later stages): reject explicitly instead of faking
-    // success. The renderer treats these rejections exactly like any other
-    // desktop-bridge failure.
-    confirmUnsaved: unsupported("confirmUnsaved"),
-    setDirty: unsupported("setDirty"),
-    setStage: unsupported("setStage"),
-    setCodePanel: unsupported("setCodePanel"),
-    editClipboard: unsupported("editClipboard"),
-    finishClose: unsupported("finishClose"),
+    // Stage 5 window lifecycle, bridged for real to the window_lifecycle
+    // Rust commands (src-tauri/src/window_lifecycle.rs), which mirror the
+    // Electron main process: the dirty flag and stage drive the "● name —
+    // Framecode" title and the stage-aware native menus; the code-panel
+    // checkbox follows the editor state; the prompt shows the same Save /
+    // Don't Save / Cancel box (Esc answers cancel); the close handshake
+    // only lets the window close when the renderer attests a clean
+    // document. Each call returns the promise the Rust command answers,
+    // so a rejection surfaces as the real failure it is.
+    confirmUnsaved: () => invoke("project_confirm_unsaved"),
+    setDirty: (dirty, name) => invoke("project_dirty", { dirty, name }),
+    setStage: (stage) => invoke("app_stage", { stage }),
+    setCodePanel: (open) => invoke("app_code", { open }),
+    finishClose: () => invoke("window_finish_close"),
+
+    // Stage 5, Tauri-only (the Electron preload had no counterpart; the
+    // engine stays JavaScript, so the renderer delivers the template
+    // names the native Templates menu lists — the same names the engine
+    // exports and the command handler resolves `template:<name>` from).
+    setTemplates: (names) =>
+      invoke("app_templates", {
+        names: Array.isArray(names) ? names.map(String) : [],
+      }),
+
+    // Stage 5 clipboard editing, mirroring the Electron
+    // `editor:clipboard` handler (`window.webContents[action]()`): the
+    // web-native editing commands run against the focused element.
+    editClipboard: async (action) => {
+      if (!["cut", "copy", "paste"].includes(action))
+        throw new Error("Unknown clipboard action.");
+      if (!doc?.activeElement) throw new Error(`editClipboard ${NOT_IMPLEMENTED}`);
+      if (action !== "paste") {
+        // Cut/copy run the standard editing command; the focused
+        // element's own handlers (CodeMirror, inputs) participate the
+        // same way they did under Electron. A refusal is a real error.
+        if (!doc.execCommand(action))
+          throw new Error(`The ${action} command was refused.`);
+        return;
+      }
+      // execCommand("paste") is blocked in webviews, so paste carries the
+      // real clipboard text to the focused element: first as a genuine
+      // paste event (CodeMirror and contentEditable handle those), then,
+      // if nothing consumed it, as a direct edit of the focused field.
+      const text = await (clipboard?.readText
+        ? clipboard.readText()
+        : Promise.reject(new Error("readClipboard unavailable")));
+      const target = doc.activeElement;
+      let event;
+      try {
+        const data = new DataTransfer();
+        data.setData("text/plain", text);
+        event = new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: data,
+        });
+        // Some engines ignore the clipboardData init option; patch it so
+        // the event still carries the text.
+        if (!event.clipboardData) {
+          Object.defineProperty(event, "clipboardData", { value: data });
+        }
+      } catch {
+        throw new Error(`editClipboard ${NOT_IMPLEMENTED}`);
+      }
+      target.dispatchEvent(event);
+      if (event.defaultPrevented) return;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        const element = target;
+        element.setRangeText(
+          text,
+          element.selectionStart ?? element.value.length,
+          element.selectionEnd ?? element.value.length,
+          "end",
+        );
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (target.isContentEditable) {
+        if (!doc.execCommand("insertText", false, text))
+          throw new Error("The paste command was refused.");
+      } else {
+        throw new Error("Nothing focused can accept a paste.");
+      }
+    },
   });
 }
 
@@ -272,6 +439,10 @@ if (
         clipboard: window.navigator?.clipboard ?? null,
         platform: platformFromNavigator(window.navigator),
         tokenHolder,
+        // The native menu command channel (capability core:default
+        // covers event listening).
+        listen: tauri?.event?.listen,
+        document: window.document,
       }),
     );
   } else {
