@@ -2,9 +2,12 @@
 // probe page) and verify through WebView2's DevTools protocol that the
 // existing frontend boots to the Home screen with the truthful desktop
 // adapter installed and no uncaught startup errors. Since Stage 3 it also
-// drives the file operations end to end, and since Stage 4 the asset
+// drives the file operations end to end, since Stage 4 the asset
 // pipeline: token delivery, the same-origin asset request matrix, a
-// same-origin canvas pixel read, and the recovery relink command path.
+// same-origin canvas pixel read, and the recovery relink command path,
+// and since Stage 5 the window lifecycle commands: the dirty/title state,
+// stage validation, the templates delivery, the close-handshake refusal
+// on a dirty document, and a clean attestation that really closes the app.
 //
 // Prerequisite: a built Tauri binary AND the Microsoft Edge WebView2
 // Runtime (desktop Windows ships it in-box; Windows Server does not - the
@@ -14,8 +17,9 @@
 //      CARGO_TARGET_DIR, CI artifact paths, etc.)
 //   2. src-tauri/target/release/framecode.exe (plain CI / default builds)
 //
-// The tab is driven over CDP exactly like scripts/test-desktop.mjs drives
-// Electron; the app itself is launched the way a real user launches it.
+// The tab is driven over CDP exactly like the retired
+// scripts/test-desktop.mjs drove Electron; the app itself is launched the
+// way a real user launches it.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
@@ -387,9 +391,9 @@ try {
               "openProject","openRecentProject","listRecents","removeRecent",
               "getSettings","setSetting","resetSettings","appInfo","saveProject",
               "newProject","confirmUnsaved","setDirty","setStage","setCodePanel",
-              "readRecovery","writeRecovery","clearRecovery","relinkRecoveryAssets",
-              "importImage","readClipboard","writeClipboard","editClipboard",
-              "finishClose","onCommand",
+              "setTemplates","readRecovery","writeRecovery","clearRecovery",
+              "relinkRecoveryAssets","importImage","readClipboard","writeClipboard",
+              "editClipboard","finishClose","onCommand",
             ];
             return required.every(
               (m) => typeof b[m] === "function",
@@ -539,6 +543,73 @@ try {
             } catch (error) {
               return JSON.stringify({ error: error?.message ?? String(error) });
             }
+          })()`,
+        );
+        // Stage 5 window lifecycle, driven through the real Rust
+        // commands: the dirty/title state accepts updates, the stage
+        // validation rejects the bogus value like the Electron handler
+        // did, the code-panel and template deliveries install the editor
+        // menu state, and the state returns to Home afterwards. The
+        // unsaved-change prompt itself is a blocking native dialog and
+        // cannot be driven unattended; it is covered by the Rust unit
+        // tests and manual validation.
+        await evaluate(
+          "lifecycleOps",
+          `(async () => {
+            const invoke = window.__TAURI__.core.invoke;
+            const steps = {};
+            try {
+              await invoke("project_dirty", { dirty: true, name: "Stage5Smoke" });
+              steps.dirty = "ok";
+              await invoke("app_stage", { stage: "editor" });
+              steps.stage = "ok";
+              try {
+                await invoke("app_stage", { stage: "bogus" });
+                steps.badStage = "MISSING — the invalid stage was accepted";
+              } catch (error) {
+                steps.badStage = error?.message ?? String(error);
+              }
+              await invoke("app_code", { open: true });
+              steps.codePanel = "ok";
+              await invoke("app_templates", { names: ["Demo", "Grid"] });
+              steps.templates = "ok";
+              await invoke("project_dirty", { dirty: false, name: "" });
+              await invoke("app_stage", { stage: "home" });
+              steps.reset = "ok";
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            return JSON.stringify(steps);
+          })()`,
+        );
+        // Stage 5 close handshake, end to end: a dirty document refuses
+        // the close with the Electron error text; the clean attestation
+        // then closes the window for real (the app process exit is
+        // asserted below).
+        await evaluate(
+          "closeHandshake",
+          `(async () => {
+            const invoke = window.__TAURI__.core.invoke;
+            const steps = {};
+            try {
+              await invoke("project_dirty", { dirty: true, name: "Stage5Close" });
+              try {
+                await invoke("window_finish_close");
+                steps.refusal = "MISSING — a dirty document was allowed to close";
+              } catch (error) {
+                steps.refusal = error?.message ?? String(error);
+              }
+              if (steps.refusal !== "Newer unsaved changes remain.")
+                return JSON.stringify(steps);
+              await invoke("project_dirty", { dirty: false, name: "Stage5Close" });
+              // The clean attestation closes the window; the page may die
+              // before the response returns, which is success, not failure.
+              invoke("window_finish_close").catch(() => {});
+              steps.close = "sent";
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            return JSON.stringify(steps);
           })()`,
         );
         ws.close();
@@ -737,6 +808,55 @@ try {
     "relink_recovery_assets answers empty without recovery data",
     !!relink && !relink.error && Array.isArray(relink.authorized) && relink.authorized.length === 0,
     `relink=${checks.relink}`,
+  );
+
+  // Stage 5 window lifecycle: every command answered, the bogus stage was
+  // rejected with the Electron validation message.
+  let lifecycleOps = null;
+  try {
+    lifecycleOps = JSON.parse(checks.lifecycleOps ?? "null");
+  } catch {
+    // A missing/unparsable step log is reported as the failure below.
+  }
+  expect(
+    "window lifecycle commands ran and validated",
+    !!lifecycleOps &&
+      !lifecycleOps.error &&
+      lifecycleOps.dirty === "ok" &&
+      lifecycleOps.stage === "ok" &&
+      lifecycleOps.badStage === "Invalid stage." &&
+      lifecycleOps.codePanel === "ok" &&
+      lifecycleOps.templates === "ok" &&
+      lifecycleOps.reset === "ok",
+    `steps=${checks.lifecycleOps}`,
+  );
+
+  // Stage 5 close handshake: the dirty refusal first, then the clean
+  // attestation that was allowed through.
+  let closeHandshake = null;
+  try {
+    closeHandshake = JSON.parse(checks.closeHandshake ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "dirty finishClose refused with the Electron error",
+    !!closeHandshake &&
+      closeHandshake.refusal === "Newer unsaved changes remain." &&
+      closeHandshake.close === "sent",
+    `steps=${checks.closeHandshake}`,
+  );
+
+  // Stage 5 end to end: the clean attestation really ends the process
+  // (the window closed through the Rust handshake, so the app exits).
+  const appExit = await Promise.race([
+    new Promise((resolve) => app.once("exit", (code) => resolve({ code }))),
+    sleep(15000).then(() => null),
+  ]);
+  expect(
+    "clean close ends the app process",
+    !!appExit && appExit.code === 0,
+    `exit=${JSON.stringify(appExit)}`,
   );
 
   if (failures.length) {
