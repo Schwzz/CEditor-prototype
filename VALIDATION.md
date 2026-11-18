@@ -3,25 +3,15 @@
 ## Local verification
 
 - `npm run check`: JavaScript module syntax checks.
-- `npm test`: 69 tests covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, settings persistence and validation, recents capping, and preview geometry.
+- `npm test`: Node test-suite covering the parser, positions, timing/source operations, continuous splitting, clipboard parameter conflicts, shared history, saved-state races, project validation, atomic replacement, recovery ordering, guide examples, settings persistence and validation, recents capping, preview geometry, and the Tauri desktop-bridge contract (every method surface, the shared `desktop:command` subscription lifecycle, and the clipboard editing commands).
 - `npm run build`: bundles CodeMirror and the renderer with esbuild, without external runtime resources.
-- `npm run test:desktop`: 74 integration checks in a real Electron process, including actual pointer input and filesystem writes.
-
-Desktop integration covers source/parameter synchronization, linked selection, timing handles, one-step drag Undo, preview hit testing/movement, context-menu splitting, clipboard snapshots, cancelled saves, native project serialization, invalid-source recovery, saving invalid drafts, unsaved Open/Close cancellation, cancelled and successful Open, recovery-cleanup failures, failed Save As, closing with Save and cancelled pickers, New/reset history, guide loading, scrolling/caret alignment at 100% and 125% zoom, recovery across window recreation, saving a restored draft, and preserving recovery when closed before a choice.
-
-The editing pass adds stable label identity, atomic batches/group bounds, lock rejection, visibility, reordering, 30fps stepping, zoom, snapping, transformed picking, numeric transform controls, and real pointer resizing/rotation with one-step undo.
-
-The Settings pass adds menu + Home navigation to a settings dialog, live application of preferences, persistence across window recreation, a trim of the recents list under a lower cap, application name/version taken from `package.json`, and safe defaults when the settings file is missing, corrupt, or foreign.
-
-The editor regression checks verify that a long document scrolls inside the editor, line-number and text rows stay aligned, and the caret remains centered on its line. The checks caught and corrected a flex layout that initially allowed long source to stretch the workspace.
-
-The product-foundation pass (Phase 2.4) verifies the advertised Run shortcut: the Run button's `Ctrl+Enter` keyhint and `aria-keyshortcuts` now have a real binding in the editor stage, with a desktop check proving the shortcut runs the composition exactly like the button. The placeholder audit also removed seven unused SVG symbol definitions, committed the close-discard fixture to clean up the recovery file it left as a directory, and made the missing-recent toast check pin the actual `/missing/` message.
+- `cargo fmt --check`, `cargo check --locked`, `cargo test --locked` (src-tauri): Rust formatting, compilation, and the persistence/lifecycle unit and integration tests, including the window-lifecycle rules the native shell enforces (title text, dirty/stage validation, close decisions, unsaved-choice mapping, zoom steps).
+- `npm run test:tauri`: launches the real Tauri executable and drives it over WebView2's DevTools protocol — boot to Home with no uncaught startup errors, the full desktop-bridge surface installed, a real `appInfo` IPC round trip, the Stage 3 file operations (Open Recent → Save → recents), the Stage 4 asset pipeline (token delivery, the same-origin request matrix, an untainted canvas pixel read, recovery relinking), and the Stage 5 window lifecycle: dirty/stage/code-panel/templates commands, stage validation, the close-handshake refusal on a dirty document, and a clean attestation that really ends the process.
+- `npm run build:tauri`: the Tauri release build (executable + NSIS installer).
 
 ## Test environment and limits
 
-Local desktop integration runs on Linux using Electron's headless Ozone backend. The restricted execution container needs a test-launch-only `--no-sandbox` flag; the application window configuration retains sandboxing and shipped Windows launches do not use that flag. Desktop host-service diagnostics about unavailable D-Bus/udev/netlink services are environment messages, not renderer errors.
-
-Native file-dialog choices are test fixtures so tests do not require a person to select files. Serialization, atomic writes, clipboard APIs, source editor, pointer gestures, and app state transitions execute for real. Human testing of actual Windows dialog presentation, multiple monitors, mixed display scaling, IME input, and accessibility tools is still useful.
+The smoke test drives the real app through the DevTools protocol, so everything it asserts happened in the shipped runtime. Native dialogs (the unsaved-change Save / Don't Save / Cancel box, Open/Save pickers) cannot be driven unattended: their decision logic is covered by Rust tests, and their on-screen presentation is verified by hand. Human testing of native menu interaction, multiple monitors, mixed display scaling, IME input, and accessibility tools is still useful.
 
 ## Windows CI gates
 
@@ -29,10 +19,10 @@ The Windows workflow must pass all of the following before producing a successfu
 
 1. Linux syntax/core tests and renderer build.
 2. Windows dependency installation and renderer build.
-3. The Electron desktop integration suite on Windows, without the Linux headless flags.
-4. Portable executable and installer packaging.
-5. Launch of `release/win-unpacked/Framecode.exe` and detection of its initialized native window title.
-6. SHA256 checksum generation and upload of both Windows executables.
+3. Rust formatting, cargo check, and the Rust test suite.
+4. The Tauri release build (executable + NSIS installer).
+5. Launch of the real app and the full smoke-test check list.
+6. SHA256 checksum generation and upload of the executable and installer.
 
 Build results are authoritative in GitHub Actions. This document describes the gates; it does not claim a particular remote run passed before its result exists.
 

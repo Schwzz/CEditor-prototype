@@ -1163,6 +1163,12 @@ async function command(name) {
     scheduleRender();
   }
 }
+// Stage 5: the engine stays JavaScript, so the renderer delivers the
+// template names the native Templates menu lists — the same list the
+// command handler resolves `template:<name>` from below.
+desktop
+  .setTemplates(TEMPLATES.map((template) => template.name))
+  .catch(() => {});
 desktop.onCommand((name) => void command(name));
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || document.querySelector("dialog[open]")) return;

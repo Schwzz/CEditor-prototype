@@ -7,8 +7,8 @@ This is a prototype for testing the interaction model. It does not import or exp
 ## Get the Windows app
 
 1. Open this repository's **Actions** tab, then **Windows desktop prototype**.
-2. Open a successful run and download **Framecode-Windows-x64** under Artifacts. GitHub may require you to sign in to download it.
-3. Extract the ZIP and run `Framecode-0.3.0-win-x64-portable.exe`, or use the `setup.exe` build to install the app and create shortcuts.
+2. Open a successful run and download **Framecode-Tauri-Windows-x64** under Artifacts. GitHub may require you to sign in to download it.
+3. Extract the ZIP and run `framecode.exe`, or use the `Framecode_0.3.0_x64-setup.exe` NSIS installer to install the app and create shortcuts.
 
 The packaged app includes its runtime. You do not need Node.js, a separate terminal, a browser tab, a server, or an account to use it. These prototype builds are unsigned. Artifacts are retained for 30 days; a new workflow run rebuilds them.
 
@@ -97,33 +97,36 @@ For templates, use **Template source** to copy the full composition code or save
 
 ## Development
 
-Requires Node.js 22+ and npm. On Windows PowerShell, use `npm.cmd` if local policy prevents running `npm.ps1`.
+Requires Node.js 22+ and npm. The desktop runtime is **Tauri 2** (Windows): building it additionally needs the Rust toolchain (`rustup`) and the Microsoft Edge WebView2 Runtime (in-box on desktop Windows).
 
 ```sh
 npm ci
-npm start
+npm run start:tauri
 ```
 
-`npm start` builds and launches the desktop app. The development command uses a terminal; the packaged executable does not.
+`npm run start:tauri` builds the renderer and launches the app through `tauri dev`. The development command uses a terminal; the packaged executable does not.
 
 ```sh
 npm run check
 npm test
 npm run build
-npm run test:desktop
-npm run dist:win
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+npm run test:tauri
+npm run build:tauri
 ```
 
-`dist:win` produces a Windows x64 portable executable and an NSIS installer under `release/`. Windows CI is the supported packaging environment. The workflow runs desktop integration tests, packages the app, launches the packaged executable, and uploads the installers and SHA256 checksums.
+`build:tauri` produces the Windows x64 executable under `src-tauri/target/release/` and the NSIS installer under `src-tauri/target/release/bundle/nsis/`. Windows CI is the supported packaging environment. The workflow runs the Rust checks and tests, builds the bundle, launches the real app through the smoke test, and uploads the executable, the installer, and SHA256 checksums.
 
 ## Code boundaries
 
-- `src/core/`: restricted parser, validated source operations, document history. No Electron or DOM dependencies.
-- `src/renderer/`: CodeMirror editor, preview geometry/hit testing, timeline, guide, and document controller.
-- `desktop/`: native window, restricted preload bridge, dialogs, clipboard, and atomic project/recovery files.
-- `scripts/`: bundling, syntax checks, desktop test runner, and packaged-Windows launch check.
-- `tests/`: core/filesystem tests and actual Electron integration checks. Native dialog choices are substituted by test fixtures; filesystem writes and renderer interactions are real.
+- `src/core/`: restricted parser, validated source operations, document history. No Tauri, Electron, or DOM dependencies.
+- `src/renderer/`: CodeMirror editor, preview geometry/hit testing, timeline, guide, document controller, and the desktop adapter (`tauri-bridge.mjs`) that mirrors the native bridge contract.
+- `src-tauri/`: the Tauri shell — window lifecycle (title bar, native menus, unsaved-change prompt, close handshake), dialogs, clipboard, asset authorization, and atomic project/recovery/settings/recents files.
+- `desktop/`: retained on-disk format reference modules (project files, recents, settings) kept only for their tests; the Electron runtime code is retired.
+- `scripts/`: bundling, syntax checks, and the real-app Tauri smoke test.
+- `tests/`: core/format tests and the desktop-bridge contract tests. Native dialog choices are substituted by test fixtures; filesystem writes are real.
 
-The renderer is sandboxed with Node integration disabled, context isolation enabled, restricted IPC, a local asset protocol, and a Content Security Policy. No HTTP server or remote content is needed. No plugin loader or AI-agent endpoint is exposed.
+The renderer runs in a Tauri WebView2 window with a capability-scoped command surface, a local authorized asset protocol, and a Content Security Policy. No HTTP server or remote content is needed. No plugin loader or AI-agent endpoint is exposed.
 
 See [VALIDATION.md](VALIDATION.md) for verification scope and [docs/ROADMAP.md](docs/ROADMAP.md) for later work.
