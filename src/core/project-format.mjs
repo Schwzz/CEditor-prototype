@@ -15,11 +15,39 @@ import { compile } from "./engine.mjs";
 
 export const MAX_PROJECT_BYTES = 1024 * 1024;
 
+/** A source line that declares a media clip (line-anchored, like the DSL). */
+const MEDIA_LINE = /^(video|audio)\(/;
+
+/**
+ * Whether a composition text declares a media clip. Mirrors the engine's
+ * line parser: only the first token of a trimmed, non-comment line counts,
+ * so commented-out media and method-like text inside strings do not.
+ */
+function declaresMedia(source) {
+  return source
+    .split("\n")
+    .some((raw) => {
+      const line = raw.trim();
+      return line.length > 0 && !line.startsWith("//") && MEDIA_LINE.test(line);
+    });
+}
+
+export const MEDIA_WRITE_GUARD_MESSAGE =
+  "This project uses media, but its last valid composition does not. Saving is blocked: an older Framecode version could open it and silently drop the media. Fix the composition error, then save again.";
+
 function byteLength(text) {
   return new TextEncoder().encode(text).length;
 }
 
-export function encodeProject(value) {
+function canonicalizeProject(value, { guardMedia }) {
+  if (
+    typeof value?.version === "number" &&
+    Number.isFinite(value.version) &&
+    value.version > 1
+  )
+    throw new Error(
+      "This project was created by a newer version of Framecode. Update Framecode to open it.",
+    );
   if (
     value?.format !== "framecode-project" ||
     value.version !== 1 ||
@@ -28,18 +56,26 @@ export function encodeProject(value) {
     value.source.length > 50000
   )
     throw new Error("Unsupported or invalid Framecode project.");
+  // The compatibility invariant (§3.0): a saved media project must carry
+  // media in lastValid too, so an older build fails at open instead of
+  // adopting it and later rewriting the file without the media.
+  if (guardMedia && declaresMedia(value.source) && !declaresMedia(value.lastValid))
+    throw new Error(MEDIA_WRITE_GUARD_MESSAGE);
   compile(value.lastValid);
-  const text =
-    JSON.stringify(
-      {
-        format: value.format,
-        version: 1,
-        source: value.source,
-        lastValid: value.lastValid,
-      },
-      null,
-      2,
-    ) + "\n";
+  return JSON.stringify(
+    {
+      format: value.format,
+      version: 1,
+      source: value.source,
+      lastValid: value.lastValid,
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+export function encodeProject(value) {
+  const text = canonicalizeProject(value, { guardMedia: true });
   if (byteLength(text) > MAX_PROJECT_BYTES)
     throw new Error("Project is too large (maximum 1 MiB).");
   return text;
@@ -54,5 +90,8 @@ export function decodeProject(text) {
   } catch {
     throw new Error("This is not a valid JSON project.");
   }
-  return JSON.parse(encodeProject(value));
+  // Opening is allowed even when a media draft's fallback is media-free:
+  // the user can see the error, repair it, and save (which enforces the
+  // write guard above).
+  return JSON.parse(canonicalizeProject(value, { guardMedia: false }));
 }

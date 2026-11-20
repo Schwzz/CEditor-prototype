@@ -69,3 +69,25 @@ test("loading a project resets cross-project history and validates selected iden
   store.select("unknown");
   assert.equal(store.selected, null);
 });
+
+test("a media project survives serialization, the format gate, and reload", async () => {
+  const { encodeProject, decodeProject } = await import("../src/core/project-format.mjs");
+  const source =
+    'composition("Media").duration(20)\nvideo("B-roll").at(1).for(4).source("C:/clips/a.mp4").sourceDuration(30)';
+  const store = new DocumentStore(source, { lastValid: source });
+  const restored = new DocumentStore(
+    decodeProject(encodeProject(store.serialize())).source,
+    { lastValid: decodeProject(encodeProject(store.serialize())).lastValid },
+  );
+  assert.equal(restored.error, null);
+  assert.equal(restored.model.clips[0].type, "video");
+  assert.equal(restored.model.clips[0].sourceDuration, 30);
+  assert.match(restored.lastValid, /video\("B-roll"\)/);
+});
+test("a media draft with a media-free fallback still loads for repair", () => {
+  const mediaDraft =
+    'composition("Media").duration(20)\nvideo("B-roll").at(1).for(4).source("C:/a.mp4").sourceDuration(30)\nbroken(';
+  const store = new DocumentStore(mediaDraft, { lastValid: DEFAULT_SOURCE });
+  assert.ok(store.error, "the draft does not compile");
+  assert.equal(store.model.clips.length, 4, "the fallback model is shown");
+});
