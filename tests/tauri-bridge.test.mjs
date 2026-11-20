@@ -41,10 +41,18 @@ const PRELOAD_VALUE_KEYS = [
 
 // The Tauri-only additions beyond the Electron preload surface:
 // whenAssetTokenReady is the readiness signal for the asynchronous
-// capability-token delivery, and setTemplates delivers the template names
-// for the native Templates menu (the engine stays JavaScript). The
-// renderer treats both as part of the adapter contract.
-const TAURI_ONLY_KEYS = ["whenAssetTokenReady", "setTemplates"];
+// capability-token delivery, setTemplates delivers the template names
+// for the native Templates menu (the engine stays JavaScript), and the
+// Stage 6 media trio (importVideo/importAudio/probeMedia) is new
+// functionality the Electron shell never had. The renderer treats them as
+// part of the adapter contract.
+const TAURI_ONLY_KEYS = [
+  "whenAssetTokenReady",
+  "setTemplates",
+  "importVideo",
+  "importAudio",
+  "probeMedia",
+];
 
 // Stage 5: the window lifecycle joins the bridged surface — none of the
 // Electron preload methods is a stub anymore. (Stage 2 persistence and
@@ -181,6 +189,23 @@ test("setTemplates delivers the renderer's template names to the native menu", a
   assert.deepEqual(await b.setTemplates(["A", 3, null]), {
     command: "app_templates",
     args: { names: ["A", "3", "null"] },
+  });
+});
+
+test("stage 6 media methods invoke the real Rust commands", async () => {
+  const b = bridge();
+  assert.deepEqual(await b.importVideo(), {
+    command: "media_import_dialog",
+    args: { kind: "video" },
+  });
+  assert.deepEqual(await b.importAudio(), {
+    command: "media_import_dialog",
+    args: { kind: "audio" },
+  });
+  const path = "C:\\clips\\Hero.mp4";
+  assert.deepEqual(await b.probeMedia(path), {
+    command: "probe_media",
+    args: { path },
   });
 });
 

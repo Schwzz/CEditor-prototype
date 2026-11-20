@@ -286,6 +286,13 @@ export function createTauriDesktopBridge({
     importImage: () => invoke("image_import_dialog"),
     relinkRecoveryAssets: () => invoke("relink_recovery_assets"),
 
+    // Stage 6 media: the kind-filtered import dialog authorizes in Rust
+    // and returns the picked path; probing reads container headers only
+    // and refuses paths this webview has not been granted.
+    importVideo: () => invoke("media_import_dialog", { kind: "video" }),
+    importAudio: () => invoke("media_import_dialog", { kind: "audio" }),
+    probeMedia: (path) => invoke("probe_media", { path }),
+
     // Stage 5 window lifecycle, bridged for real to the window_lifecycle
     // Rust commands (src-tauri/src/window_lifecycle.rs), which mirror the
     // Electron main process: the dirty flag and stage drive the "● name —
