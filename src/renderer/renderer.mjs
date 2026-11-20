@@ -9,6 +9,19 @@ import { visibleClips } from "../core/engine.mjs";
 export const WIDTH = 1920,
   HEIGHT = 1080;
 
+// Same-origin asset URL keeps drawn media same-origin with the page, so
+// canvas pixel reads never taint. Under Electron the page origin is
+// framecode://app (framecode://app/assets); under Tauri it is the
+// overridden tauri protocol's origin (…/assets on the app origin). Shared
+// by the image and video caches so keys and query shapes match everywhere.
+export function assetUrl(source) {
+  const token = window.framecodeDesktop?.assetToken || "";
+  const base = window.__TAURI__
+    ? location.origin + "/assets/?path="
+    : "framecode://app/assets/?path=";
+  return base + encodeURIComponent(source) + (token ? "&token=" + token : "");
+}
+
 export class ImageCache {
   static MAX_ENTRIES = 64;
   #cache = new Map();
@@ -22,21 +35,8 @@ export class ImageCache {
   #awaitingToken = new Set();
   #waitingForToken = false;
 
-  // Same-origin asset URL keeps drawn images same-origin with the page, so
-  // canvas pixel reads never taint. Under Electron the page origin is
-  // framecode://app (framecode://app/assets); under Tauri it is the
-  // overridden tauri protocol's origin (…/assets on the app origin).
-  // Built identically by every cache API entry so keys match everywhere.
   #url(source) {
-    const token = window.framecodeDesktop?.assetToken || "";
-    const base = window.__TAURI__
-      ? location.origin + "/assets/?path="
-      : "framecode://app/assets/?path=";
-    return (
-      base +
-      encodeURIComponent(source) +
-      (token ? "&token=" + token : "")
-    );
+    return assetUrl(source);
   }
 
   get(source) {
@@ -180,7 +180,53 @@ function wrap(ctx, value, width, font) {
   if (line) lines.push(line);
   return lines.slice(0, 5);
 }
-export function frameGeometry(ctx, model, time, imageCache = null) {
+const MEDIA_BOX_WIDTH = 1280,
+  MEDIA_BOX_HEIGHT = 720;
+
+/// The drawn size of a media clip inside the 16:9 composition box, under
+/// the same `fit` rules images already use (`contain` by default).
+function fitMediaSize(clip, aspect) {
+  const boxW = MEDIA_BOX_WIDTH,
+    boxH = MEDIA_BOX_HEIGHT,
+    boxAspect = boxW / boxH,
+    safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : boxAspect;
+  if (clip.fit === "fill") return { width: boxW, height: boxH };
+  if (clip.fit === "cover")
+    return safeAspect > boxAspect
+      ? { width: boxH * safeAspect, height: boxH }
+      : { width: boxW, height: boxW / safeAspect };
+  return safeAspect > boxAspect
+    ? { width: boxW, height: boxW / safeAspect }
+    : { width: boxH * safeAspect, height: boxH };
+}
+
+/// Shared geometry for the two media clip kinds (image, video): identical
+/// placement, rise offset, rotation, scale and alpha.
+function mediaItem(clip, motion, kind, size) {
+  const [x, y] = defaultPosition(clip);
+  return {
+    clip,
+    kind,
+    ...motion,
+    x,
+    y: y + (clip.motion === "rise" ? (1 - motion.progress) * 75 : 0),
+    rotation: (clip.rotation * Math.PI) / 180,
+    scale: clip.scale,
+    alpha: motion.alpha * clip.opacity,
+    width: size.width,
+    height: size.height,
+    localLeft: -size.width / 2,
+    localTop: -size.height / 2,
+  };
+}
+
+export function frameGeometry(
+  ctx,
+  model,
+  time,
+  imageCache = null,
+  videoCache = null,
+) {
   return visibleClips(model, time).map((clip) => {
     const motion = motionState(clip, time, Number(model.params.tempo) || 1);
     if (clip.type === "scene")
@@ -222,49 +268,27 @@ export function frameGeometry(ctx, model, time, imageCache = null) {
       };
     }
     if (clip.type === "image") {
-      const [x, y] = defaultPosition(clip);
-      const img = imageCache?.get(clip.source);
-      let imgW = 1280, imgH = 720;
-      if (img) {
-        const baseBoxW = 1280;
-        const baseBoxH = 720;
-        const aspect = img.width / img.height;
-        const boxAspect = baseBoxW / baseBoxH;
-        if (clip.fit === "fill") {
-          imgW = baseBoxW;
-          imgH = baseBoxH;
-        } else if (clip.fit === "cover") {
-          if (aspect > boxAspect) {
-            imgH = baseBoxH;
-            imgW = imgH * aspect;
-          } else {
-            imgW = baseBoxW;
-            imgH = imgW / aspect;
-          }
-        } else { // contain
-          if (aspect > boxAspect) {
-            imgW = baseBoxW;
-            imgH = imgW / aspect;
-          } else {
-            imgH = baseBoxH;
-            imgW = imgH * aspect;
-          }
-        }
-      }
-      return {
-        clip,
-        kind: "image",
-        ...motion,
-        x,
-        y: y + (clip.motion === "rise" ? (1 - motion.progress) * 75 : 0),
-        rotation: (clip.rotation * Math.PI) / 180,
-        scale: clip.scale,
-        alpha: motion.alpha * clip.opacity,
-        width: imgW,
-        height: imgH,
-        localLeft: -imgW / 2,
-        localTop: -imgH / 2,
-      };
+      const img = imageCache?.get(clip.source),
+        aspect = img?.width > 0 && img?.height > 0 ? img.width / img.height : 0;
+      return mediaItem(clip, motion, "image", fitMediaSize(clip, aspect));
+    }
+    if (clip.type === "video") {
+      // Asking the pool for the entry here creates the decoder on first
+      // paint; geometry then uses the real frame size once metadata has
+      // arrived and stays at the 16:9 box until it does, so the placeholder
+      // never jumps between two unrelated shapes.
+      const entry = videoCache?.entryFor?.(clip) || null;
+      const aspect =
+        entry?.width > 0 && entry?.height > 0 ? entry.width / entry.height : 0;
+      const item = mediaItem(clip, motion, "video", fitMediaSize(clip, aspect));
+      item.state = !entry
+        ? "missing"
+        : entry.failed
+          ? "failed"
+          : entry.ready
+            ? "ready"
+            : "decoding";
+      return item;
     }
     const bottom = clip.place === "bottom",
       center = clip.place === "center",
@@ -329,9 +353,16 @@ export function renderFrame(
   ctx,
   model,
   time,
-  { selected = [], primary = null, handleSize = 20, guides = [], imageCache = null } = {},
+  {
+    selected = [],
+    primary = null,
+    handleSize = 20,
+    guides = [],
+    imageCache = null,
+    videoCache = null,
+  } = {},
 ) {
-  const items = frameGeometry(ctx, model, time, imageCache);
+  const items = frameGeometry(ctx, model, time, imageCache, videoCache);
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   ctx.fillStyle = "#171b18";
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -395,7 +426,7 @@ export function renderFrame(
       item.lines.forEach((line, index) =>
         ctx.fillText(line, 0, index * item.size * 1.02, item.maxWidth),
       );
-    } else if (item.kind === "image") {
+    } else if (item.kind === "image" || item.kind === "video") {
       ctx.translate(item.x, item.y);
       ctx.rotate(item.rotation);
       ctx.scale(item.scale, item.scale);
@@ -405,9 +436,18 @@ export function renderFrame(
       ctx.beginPath();
       ctx.rect(-640, -360, 1280, 720);
       ctx.clip();
-      const img = imageCache?.get(clip.source);
-      if (img) {
-        ctx.drawImage(img, item.localLeft, item.localTop, item.width, item.height);
+      let media = null;
+      if (item.kind === "image") {
+        media = imageCache?.get(clip.source) || null;
+      } else {
+        const entry = videoCache?.get?.(clip);
+        // A decoder that has not reached HAVE_CURRENT_DATA paints the
+        // placeholder; the pool re-renders when it does.
+        if (entry?.ready && Number(entry.element.readyState) >= 2)
+          media = entry.element;
+      }
+      if (media) {
+        ctx.drawImage(media, item.localLeft, item.localTop, item.width, item.height);
       } else {
         ctx.fillStyle = "#2a2d2a";
         ctx.fillRect(item.localLeft, item.localTop, item.width, item.height);
@@ -418,9 +458,17 @@ export function renderFrame(
         ctx.font = "40px monospace";
         ctx.textAlign = "center";
         ctx.fillText(
-          clip.source ? "IMAGE NOT FOUND" : "NO SOURCE",
+          item.kind === "video"
+            ? item.state === "failed"
+              ? "VIDEO NOT FOUND"
+              : item.state === "decoding"
+                ? "DECODING"
+                : "NO SOURCE"
+            : clip.source
+              ? "IMAGE NOT FOUND"
+              : "NO SOURCE",
           0,
-          10
+          10,
         );
       }
     } else {

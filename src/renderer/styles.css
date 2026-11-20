@@ -1386,6 +1386,15 @@ input:disabled {
 .track-row.is-locked .clip-body {
   cursor: default;
 }
+/* Stage 6 media lane hint: audio clips have no visual frame, so their lane
+   gets a dotted baseline instead of pretending to be a picture track. */
+.track-row[data-kind="audio"] .track-lane {
+  border-top-style: dotted;
+  border-top-color: #6a5064;
+}
+.track-row[data-kind="video"] .track-lane {
+  border-top-color: #4d6f7f;
+}
 
 .layer-controls {
   display: flex;

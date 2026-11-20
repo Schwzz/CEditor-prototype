@@ -4,7 +4,7 @@ import { defaultPosition, itemCorners, transformHandles } from "./geometry.mjs";
 
 export function createPreview(
   canvas,
-  { store, getTime, onSelect, onPause, onCommit, onError, imageCache },
+  { store, getTime, onSelect, onPause, onCommit, onError, imageCache, videoCache },
 ) {
   const ctx = canvas.getContext("2d");
   let items = [],
@@ -29,6 +29,7 @@ export function createPreview(
       handleSize: handleSize(),
       guides,
       imageCache,
+      videoCache,
     });
   }
   function handleAt(p) {

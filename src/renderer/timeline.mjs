@@ -7,6 +7,10 @@ const colors = {
   text: ["#343447", "#5d5978", "#c2b9e1"],
   shape: ["#4a3c2a", "#77623c", "#ddc69d"],
   image: ["#3c4a2a", "#62773c", "#c6dd9d"],
+  // Stage 6 media: streamed video and (later) audio clips get their own
+  // palette so a timeline with mixed layer kinds stays readable.
+  video: ["#2b3d46", "#4d6f7f", "#a9d1e0"],
+  audio: ["#40303c", "#6a5064", "#d7b5cd"],
 };
 export function createTimeline({
   store,
@@ -239,6 +243,8 @@ export function createTimeline({
       label.style.color = colors[clip.type][2];
       const lane = document.createElement("div");
       lane.className = "track-lane";
+      lane.dataset.kind = clip.type;
+      row.dataset.kind = clip.type;
       lane.style.backgroundSize = 100 / (model.duration / step) + "% 100%";
       const container = document.createElement("div");
       container.className = "clip";
