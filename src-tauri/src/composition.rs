@@ -51,6 +51,23 @@ enum Kind {
     Text,
     Shape,
     Image,
+    Video,
+    Audio,
+}
+
+/// The asset-bearing clip kinds, as the authorization layer needs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipKind {
+    Image,
+    Video,
+    Audio,
+}
+
+/// One resolved asset path and the kind of clip that references it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipSource {
+    pub kind: ClipKind,
+    pub path: String,
 }
 
 struct Call {
@@ -73,6 +90,7 @@ struct RawClip {
     fit: Option<Arg>,
     source_at: Option<Arg>,
     source_duration: Option<Arg>,
+    gain: Option<Arg>,
     scale: Option<Arg>,
     rotation: Option<Arg>,
     opacity: Option<Arg>,
@@ -99,6 +117,7 @@ impl RawClip {
             fit: None,
             source_at: None,
             source_duration: None,
+            gain: None,
             scale: None,
             rotation: None,
             opacity: None,
@@ -111,9 +130,9 @@ impl RawClip {
 }
 
 /// The engine's `allowed` matrix: the chain methods each clip kind
-/// accepts (plus `label`/`hidden`/`locked`/`opacity` for every kind and
-/// `scale`/`rotation` for every kind but `scene`, applied by callers).
-const ALLOWED: [(Kind, &[&str]); 4] = [
+/// accepts (plus `label`/`hidden`/`locked` for every kind and `opacity`
+/// for every visual kind, applied below).
+const ALLOWED: [(Kind, &[&str]); 6] = [
     (
         Kind::Scene,
         &["at", "for", "look", "sourceAt", "sourceDuration"],
@@ -129,6 +148,8 @@ const ALLOWED: [(Kind, &[&str]); 4] = [
             "position",
             "sourceAt",
             "sourceDuration",
+            "scale",
+            "rotation",
         ],
     ),
     (
@@ -141,6 +162,8 @@ const ALLOWED: [(Kind, &[&str]); 4] = [
             "position",
             "sourceAt",
             "sourceDuration",
+            "scale",
+            "rotation",
         ],
     ),
     (
@@ -156,6 +179,24 @@ const ALLOWED: [(Kind, &[&str]); 4] = [
             "scale",
             "rotation",
         ],
+    ),
+    (
+        Kind::Video,
+        &[
+            "at",
+            "for",
+            "source",
+            "fit",
+            "position",
+            "sourceAt",
+            "sourceDuration",
+            "scale",
+            "rotation",
+        ],
+    ),
+    (
+        Kind::Audio,
+        &["at", "for", "source", "gain", "sourceAt", "sourceDuration"],
     ),
 ];
 
@@ -335,6 +376,7 @@ fn assign(clip: &mut RawClip, call: &Call) {
         "fit" => clip.fit = Some(single),
         "sourceAt" => clip.source_at = Some(single),
         "sourceDuration" => clip.source_duration = Some(single),
+        "gain" => clip.gain = Some(single),
         "scale" => clip.scale = Some(single),
         "rotation" => clip.rotation = Some(single),
         "opacity" => clip.opacity = Some(single),
@@ -371,10 +413,10 @@ fn js_plus(a: &Val, b: &Val) -> Val {
     }
 }
 
-/// Compiles `source` exactly like the engine and returns the resolved
-/// `source` path of every valid image clip, in clip order. Any compile
+/// Compiles `source` exactly like the engine and returns every asset-bearing
+/// clip's resolved `source` path and kind, in clip order. Any compile
 /// failure returns `Err` — callers treat that as "no candidates".
-pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
+pub fn clip_sources(source: &str) -> Result<Vec<ClipSource>, String> {
     // The engine caps `source.length` (UTF-16 code units).
     if source.encode_utf16().count() > 50000 {
         return Err("Keep the composition under 50,000 characters.".to_string());
@@ -439,12 +481,14 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
                 params.insert(name.clone(), value);
                 param_lines.insert(name, index);
             }
-            "scene" | "text" | "shape" | "image" => {
+            "scene" | "text" | "shape" | "image" | "video" | "audio" => {
                 let kind = match root.name.as_str() {
                     "scene" => Kind::Scene,
                     "text" => Kind::Text,
                     "shape" => Kind::Shape,
-                    _ => Kind::Image,
+                    "image" => Kind::Image,
+                    "video" => Kind::Video,
+                    _ => Kind::Audio,
                 };
                 let id_ok = matches!(
                     &root.args.first(),
@@ -466,22 +510,15 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
                     .find(|(k, _)| *k == kind)
                     .expect("every kind has an allowed list")
                     .1;
-                let extra: &[&str] = if kind == Kind::Scene {
-                    &[]
-                } else {
-                    &["scale", "rotation"]
-                };
                 let mut seen: HashSet<&str> = HashSet::new();
                 for call in &parsed {
                     // The engine's acceptance check: an allowed method for
-                    // the kind (plus the universal/extra methods), the
-                    // exact argument count, and no repeats.
+                    // the kind (plus label/hidden/locked for every kind and
+                    // opacity for every visual kind), the exact argument
+                    // count, and no repeats. Audio has no visual surface.
                     let accepted = allowed.contains(&call.name.as_str())
-                        || matches!(
-                            call.name.as_str(),
-                            "label" | "hidden" | "locked" | "opacity"
-                        )
-                        || extra.contains(&call.name.as_str());
+                        || matches!(call.name.as_str(), "label" | "hidden" | "locked")
+                        || (kind != Kind::Audio && call.name == "opacity");
                     let count_ok = call.args.len() == if call.name == "position" { 2 } else { 1 };
                     if !accepted || !count_ok || seen.contains(call.name.as_str()) {
                         return Err(fail(
@@ -508,7 +545,7 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
         return Err("This prototype supports up to 24 clips.".to_string());
     }
 
-    let mut sources = Vec::new();
+    let mut sources: Vec<ClipSource> = Vec::new();
     for clip in &clips {
         let line = clip.line + 1;
         // The engine resolves every listed key first (unknown-parameter
@@ -591,6 +628,7 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
             &params,
             line,
         )?;
+        let r_gain = resolve(clip.gain.as_ref().unwrap_or(&Arg::Num(1.0)), &params, line)?;
 
         // Label: string, 1–160 characters (160 UTF-16 units, like JS).
         let Val::Str(label) = &r_label else {
@@ -663,7 +701,15 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
         let Val::Num(source_duration) = source_duration else {
             return Err(fail(line, "Clip exceeds its animation source window."));
         };
-        if !source_duration.is_finite() || source_duration <= 0.0 || source_duration > 60.0 {
+        let max_source_duration = if matches!(clip.kind, Kind::Video | Kind::Audio) {
+            3600.0
+        } else {
+            60.0
+        };
+        if !source_duration.is_finite()
+            || source_duration <= 0.0
+            || source_duration > max_source_duration
+        {
             return Err(fail(line, "Clip exceeds its animation source window."));
         }
         // Engine: clip.sourceAt + clip.for > clip.sourceDuration + 0.000001.
@@ -732,26 +778,49 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
         if !is_hex_color(color) {
             return Err(fail(line, "Colors use six-digit hex, such as \"#d6fa69\"."));
         }
-        if clip.kind == Kind::Image {
+        if matches!(clip.kind, Kind::Image | Kind::Video | Kind::Audio) {
+            let kind = match clip.kind {
+                Kind::Image => ClipKind::Image,
+                Kind::Video => ClipKind::Video,
+                _ => ClipKind::Audio,
+            };
+            let requirement = match clip.kind {
+                Kind::Image => "Image clips require a source path.",
+                Kind::Video => "Video clips require a source path.",
+                _ => "Audio clips require a source path.",
+            };
             let Val::Str(source_path) = &r_source else {
-                return Err(fail(line, "Image clips require a source path."));
+                return Err(fail(line, requirement));
             };
             if js_trim(source_path).is_empty() {
-                return Err(fail(line, "Image clips require a source path."));
+                return Err(fail(line, requirement));
             }
-            let Val::Str(fit) = &r_fit else {
-                return Err(fail(
-                    line,
-                    "Fit supports \"contain\", \"cover\", or \"fill\".",
-                ));
-            };
-            if !["contain", "cover", "fill"].contains(&fit.as_str()) {
-                return Err(fail(
-                    line,
-                    "Fit supports \"contain\", \"cover\", or \"fill\".",
-                ));
+            if matches!(clip.kind, Kind::Image | Kind::Video) {
+                let Val::Str(fit) = &r_fit else {
+                    return Err(fail(
+                        line,
+                        "Fit supports \"contain\", \"cover\", or \"fill\".",
+                    ));
+                };
+                if !["contain", "cover", "fill"].contains(&fit.as_str()) {
+                    return Err(fail(
+                        line,
+                        "Fit supports \"contain\", \"cover\", or \"fill\".",
+                    ));
+                }
             }
-            sources.push(source_path.clone());
+            if clip.kind == Kind::Audio {
+                let Val::Num(gain) = r_gain else {
+                    return Err(fail(line, "Gain must be between 0 and 2."));
+                };
+                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+                    return Err(fail(line, "Gain must be between 0 and 2."));
+                }
+            }
+            sources.push(ClipSource {
+                kind,
+                path: source_path.clone(),
+            });
         }
     }
 
@@ -767,6 +836,16 @@ pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(sources)
+}
+
+/// The image-only view of [`clip_sources`], kept for callers that still
+/// want plain image paths (the existing Stage 4 tests and image relinking).
+pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
+    Ok(clip_sources(source)?
+        .into_iter()
+        .filter(|clip| clip.kind == ClipKind::Image)
+        .map(|clip| clip.path)
+        .collect())
 }
 
 #[cfg(test)]
@@ -790,6 +869,101 @@ mod tests {
             "composition(\"Scan\").duration(5)\nimage(\"hero\").at(0).for(5).source({})",
             serde_json::to_string(path).unwrap()
         )
+    }
+
+    #[test]
+    fn extracts_video_and_audio_sources_with_their_kinds() {
+        let video = r"C:\clips\b-roll.mp4";
+        let audio = r"C:\audio\score.mp3";
+        let source = format!(
+            "composition(\"Media\").duration(20)\nvideo(\"V\").at(0).for(5).source({}).sourceDuration(30)\naudio(\"A\").at(5).for(5).source({}).gain(0.4)",
+            serde_json::to_string(video).unwrap(),
+            serde_json::to_string(audio).unwrap()
+        );
+        assert_eq!(
+            clip_sources(&source).unwrap(),
+            vec![
+                ClipSource { kind: ClipKind::Video, path: video.to_string() },
+                ClipSource { kind: ClipKind::Audio, path: audio.to_string() },
+            ]
+        );
+        assert_eq!(
+            image_clip_sources(&source).unwrap(),
+            Vec::<String>::new(),
+            "the image-only wrapper ignores media"
+        );
+    }
+
+    #[test]
+    fn media_acceptance_matches_the_engine_matrix() {
+        let path_json = serde_json::to_string(r"C:\a.mp4").unwrap();
+        // Media keeps the one-hour source cap; images stay at 60 s.
+        let long = format!(
+            "composition(\"L\").duration(10)\nvideo(\"v\").at(0).for(10).source({path_json}).sourceDuration(3600)"
+        );
+        assert_eq!(clip_sources(&long).unwrap().len(), 1);
+        let too_long = format!(
+            "composition(\"L\").duration(10)\nvideo(\"v\").at(0).for(10).source({path_json}).sourceDuration(3600.5)"
+        );
+        assert!(clip_sources(&too_long)
+            .unwrap_err()
+            .contains("Clip exceeds its animation source window."));
+        // Audio has no visual surface: opacity/scale/rotation/position/fit
+        // are all rejected, like the engine.
+        for method in ["opacity(0.5)", "scale(2)", "rotation(15)", "position(1, 2)", "fit(\"cover\")"] {
+            let source = format!(
+                "composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5).source(\"C:\\\\a.mp3\").{method}"
+            );
+            assert!(
+                clip_sources(&source)
+                    .unwrap_err()
+                    .contains("Unsupported or repeated method"),
+                "audio {method}"
+            );
+        }
+        // Video rejects audio-only gain.
+        let video_gain = format!(
+            "composition(\"V\").duration(10)\nvideo(\"v\").at(0).for(5).source({path_json}).gain(1)"
+        );
+        assert!(clip_sources(&video_gain)
+            .unwrap_err()
+            .contains("Unsupported or repeated method: .gain()."));
+        // Gain range and required sources.
+        for gain in ["-1", "3", "\"loud\""] {
+            let source = format!(
+                "composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5).source(\"C:\\\\a.mp3\").gain({gain})"
+            );
+            assert!(
+                clip_sources(&source)
+                    .unwrap_err()
+                    .contains("Gain must be between 0 and 2."),
+                "gain {gain}"
+            );
+        }
+        assert!(clip_sources("composition(\"A\").duration(10)\nvideo(\"v\").at(0).for(5)")
+            .unwrap_err()
+            .contains("Video clips require a source path."));
+        assert!(clip_sources("composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5)")
+            .unwrap_err()
+            .contains("Audio clips require a source path."));
+    }
+
+    #[test]
+    fn media_always_has_a_source_window() {
+        // No explicit sourceAt/sourceDuration: the default window is
+        // sourceAt + for, and hasSourceWindow is not part of the scan
+        // output, so this pins that the default compiles and resolves.
+        let source = format!(
+            "composition(\"M\").duration(10)\nvideo(\"v\").at(1).for(4).source({})",
+            serde_json::to_string(PATH).unwrap()
+        );
+        assert_eq!(
+            clip_sources(&source).unwrap(),
+            vec![ClipSource {
+                kind: ClipKind::Video,
+                path: PATH.to_string()
+            }]
+        );
     }
 
     #[test]
@@ -860,8 +1034,9 @@ mod tests {
         let cases: Vec<(String, &str)> = vec![
             // No composition.
             (format!("image(\"hero\").at(0).for(5).source({path_json})"), "Start with composition"),
-            // Unknown function.
-            (format!("composition(\"Bad\").duration(5)\nvideo(\"v\").at(0).for(5).source({path_json})"), "Unknown function: video."),
+            // Unknown function. `video`/`audio` are valid since Stage 6;
+            // an unknown root keeps the legacy error contract.
+            (format!("composition(\"Bad\").duration(5)\ncamera(\"v\").at(0).for(5).source({path_json})"), "Unknown function: camera."),
             // Trailing comment after a call is invalid DSL (the engine's
             // calls() parser hits it and fails).
             (format!("composition(\"Bad\").duration(5)\nimage(\"hero\").at(0).for(5).source({path_json}) // note"), "Expected a function call"),
