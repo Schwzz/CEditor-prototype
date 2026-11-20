@@ -177,7 +177,7 @@ export function compile(source) {
       result.paramLines[root.args[0]] = index;
       return;
     }
-    if (!["scene", "text", "shape", "image"].includes(root.name))
+    if (!["scene", "text", "shape", "image", "video", "audio"].includes(root.name))
       fail(line, `Unknown function: ${root.name}.`);
     if (
       root.args.length !== 1 ||
@@ -210,6 +210,7 @@ export function compile(source) {
       hasSourceWindow: false,
       source: "",
       fit: "contain",
+      gain: 1,
     };
     const allowed = {
       scene: ["at", "for", "look", "sourceAt", "sourceDuration"],
@@ -222,6 +223,8 @@ export function compile(source) {
         "position",
         "sourceAt",
         "sourceDuration",
+        "scale",
+        "rotation",
       ],
       shape: [
         "at",
@@ -231,6 +234,8 @@ export function compile(source) {
         "position",
         "sourceAt",
         "sourceDuration",
+        "scale",
+        "rotation",
       ],
       image: [
         "at",
@@ -243,6 +248,18 @@ export function compile(source) {
         "scale",
         "rotation",
       ],
+      video: [
+        "at",
+        "for",
+        "source",
+        "fit",
+        "position",
+        "sourceAt",
+        "sourceDuration",
+        "scale",
+        "rotation",
+      ],
+      audio: ["at", "for", "source", "gain", "sourceAt", "sourceDuration"],
     };
     const seen = new Set();
     for (const call of parsed) {
@@ -252,8 +269,9 @@ export function compile(source) {
           "label",
           "hidden",
           "locked",
-          "opacity",
-          ...(root.name === "scene" ? [] : ["scale", "rotation"]),
+          // Audio has no visual transform surface at all: no opacity,
+          // scale, rotation, or position.
+          ...(root.name === "audio" ? [] : ["opacity"]),
         ].includes(call.name) ||
         call.args.length !== (call.name === "position" ? 2 : 1) ||
         seen.has(call.name)
@@ -264,6 +282,11 @@ export function compile(source) {
       if (["sourceAt", "sourceDuration"].includes(call.name))
         clip.hasSourceWindow = true;
     }
+    // Media always carries a source window: playback maps composition time
+    // onto file time, so the window is the trim model even when the author
+    // wrote neither .sourceAt() nor .sourceDuration().
+    if (clip.type === "video" || clip.type === "audio")
+      clip.hasSourceWindow = true;
     result.clips.push(clip);
   });
   if (!hasComposition) fail(1, 'Start with composition("Name").duration(12).');
@@ -302,6 +325,7 @@ export function compile(source) {
       "scale",
       "rotation",
       "opacity",
+      "gain",
     ])
       clip[key] = resolve(clip[key], clip.line + 1);
     if (
@@ -338,12 +362,17 @@ export function compile(source) {
         fail(clip.line + 1, "Position needs two finite pixel coordinates.");
     }
     clip.sourceDuration ??= clip.sourceAt + clip.for;
+    // Composition clips keep the 60 s animation-window cap. Media clips
+    // declare real file length, so they relax the source window only (the
+    // composition itself is still capped at 60 s above).
+    const maxSourceDuration =
+      clip.type === "video" || clip.type === "audio" ? 3600 : 60;
     if (
       !Number.isFinite(clip.sourceAt) ||
       clip.sourceAt < 0 ||
       !Number.isFinite(clip.sourceDuration) ||
       clip.sourceDuration <= 0 ||
-      clip.sourceDuration > 60 ||
+      clip.sourceDuration > maxSourceDuration ||
       clip.sourceAt + clip.for > clip.sourceDuration + 0.000001
     )
       fail(clip.line + 1, "Clip exceeds its animation source window.");
@@ -374,6 +403,25 @@ export function compile(source) {
       if (!["contain", "cover", "fill"].includes(clip.fit))
         fail(clip.line + 1, 'Fit supports "contain", "cover", or "fill".');
     }
+    if (clip.type === "video" || clip.type === "audio") {
+      if (typeof clip.source !== "string" || !clip.source.trim())
+        fail(
+          clip.line + 1,
+          clip.type === "video"
+            ? "Video clips require a source path."
+            : "Audio clips require a source path.",
+        );
+    }
+    if (
+      clip.type === "video" &&
+      !["contain", "cover", "fill"].includes(clip.fit)
+    )
+      fail(clip.line + 1, 'Fit supports "contain", "cover", or "fill".');
+    if (
+      clip.type === "audio" &&
+      (!Number.isFinite(clip.gain) || clip.gain < 0 || clip.gain > 2)
+    )
+      fail(clip.line + 1, "Gain must be between 0 and 2.");
   }
   if (
     "tempo" in result.params &&
