@@ -386,6 +386,16 @@ fn build_menu(
                     accelerator: Some("CmdOrCtrl+I"),
                 },
             )?;
+            let import_video = command_item(
+                app,
+                &CommandItem {
+                    // Stage 6: the video half of the media workflow, same
+                    // temporary File-menu home as image import.
+                    label: "Import video\u{2026}",
+                    id: "importVideo",
+                    accelerator: Some("CmdOrCtrl+Shift+I"),
+                },
+            )?;
             let source = command_item(
                 app,
                 &CommandItem {
@@ -401,6 +411,7 @@ fn build_menu(
                 .item(&save)
                 .item(&save_as)
                 .item(&import)
+                .item(&import_video)
                 .separator()
                 .item(&source)
                 .separator()

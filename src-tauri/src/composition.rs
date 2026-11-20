@@ -18,12 +18,12 @@
 //!
 //! Anything the engine would reject fails here too, so authorization
 //! scanning is fail-closed: a composition that does not compile
-//! contributes no image paths at all, and `.source()` arguments on
-//! non-image clips are parse errors just like in the engine — never
+//! contributes no asset paths at all, and `.source()` arguments on
+//! non-asset clips are parse errors just like in the engine — never
 //! candidates.
 //!
-//! The only exposed outcome is the one scanning needs: the resolved
-//! `source` of every valid image clip.
+//! The exposed outcome is the one scanning needs: the resolved `source`
+//! of every valid asset clip (image, video, audio) and its kind.
 
 use std::collections::{HashMap, HashSet};
 
