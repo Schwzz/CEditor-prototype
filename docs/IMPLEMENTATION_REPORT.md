@@ -66,7 +66,7 @@ Native file-dialog choices are fixtures in automated tests; filesystem operation
 - Do hands-on Windows testing of native dialogs, mixed monitor scaling, IME input and assistive technology. Automated alignment checks currently exercise 100% and 125% zoom, not every display configuration.
 - Continue testing source/timeline round trips with real editing sessions; the language remains intentionally small and line-based.
 - The renderer/controller can be split further as the editor grows; keep new features behind the shared document operations.
-- Real media import, audio, video export, keyframes remain later milestones, not missing pieces of the approved prototype scope.
+- Video import, decoding, and muted preview playback shipped in 0.4.0 (Stage 6 M1). Audio playback, video/audio export, and keyframes remain later milestones, not missing pieces of the approved prototype scope.
 
 ## Future features recorded
 

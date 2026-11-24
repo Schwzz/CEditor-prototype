@@ -1,6 +1,7 @@
 # Stage 6 — Media Engine: Technical Assessment & Implementation Plan
 
-Status: **planning complete; implementation tracked separately as M1**
+Status: **planning complete; M1 implemented on `stage-6-media-engine-m1`
+(0.4.0). Phases B–F remain future work; see §5 for the verified scope.**
 Base: `main` @ `d37d977` (Stage 5 merged). §1–§2 are a snapshot of that baseline.
 Scope note: rendering/export is **out of scope** (Stage 8). This stage ends at
 "video and audio can be imported, placed, trimmed, played back, and relinked".
@@ -407,7 +408,9 @@ Dependencies: A+B+C.
       `Content-Range`, `Accept-Ranges: bytes`, exact 1024 bytes.
 - [ ] The same URL without a token, or for a non-media extension, still returns
       `403`/`400` **before** any range handling.
-- [ ] A 500 MB file plays without the process growing by 500 MB.
+- [ ] A 500 MB file plays without the process growing by 500 MB. (M1
+      verifies the bounded-response half with a 512 MiB sparse file; playback
+      at that size is not covered — see §5.)
 - [ ] Old v1 projects open unchanged; every existing test stays green.
 - [ ] A media project writes a `lastValid` that contains media, so a 0.3 build
       throws `Unknown function: video.` at open and adopts nothing (§3.0 C1).
@@ -419,8 +422,8 @@ Dependencies: A+B+C.
       `tests/project-files.test.mjs`, `tests/document.test.mjs`,
       `tests/tauri-bridge.test.mjs`, `src-tauri` unit tests in `media.rs` /
       `assets.rs` (range parser: closed, open-ended, suffix, inverted, huge,
-      zero-length), `scripts/test-tauri.mjs` (real-app range probe + media save
-      round-trip).
+      zero-length), `scripts/test-tauri.mjs` (real-app range probe, media save
+      round-trip, decode + seek/paint).
 
 ### Phase B
 - [ ] Playhead at `t` paints the frame at `sourceAt + (t - at)` (±1 frame).
@@ -477,7 +480,8 @@ Dependencies: A+B+C.
 ## 5. Recommended first milestone
 
 **M1 — "Import a video, see a real frame, seek to a real frame."**
-A vertical slice, no audio, no playback sync yet:
+A vertical slice, no audio playback, no playback sync yet (the `audio()` type
+parses and saves, but has no playback, lane, or gain UI):
 
 1. `src-tauri/src/media.rs` probe + `media_import_dialog("video")` +
    `video` extensions in the authorization registry.
@@ -495,14 +499,46 @@ A vertical slice, no audio, no playback sync yet:
    (C2) + provenance note (C4), plus the recovery/clipboard parity tests (C3),
    with the §3.0 tests.
 
-Definition of done: on Windows, import a 30 s 1080p MP4, see it in the
-timeline with a 30 s source window, click at 0:12 and see the correct frame,
-close and reopen the project and get the same behaviour — with the full
-existing suite green and format v1 untouched. In addition, the saved file's
-`lastValid` contains the media statement, the write guard refuses the
-stale-`lastValid` case with the §3.0 message, and a 0.3 build opening the
-project fails with `Unknown function: video.` without adopting or rewriting
-anything.
+Definition of done (original production-scale target, not the shipped
+verification): on Windows, import a 30 s 1080p MP4, see it in the timeline
+with a 30 s source window, click at 0:12 and see the correct frame, close and
+reopen the project and get the same behaviour — with the full existing suite
+green and format v1 untouched. In addition, the saved file's `lastValid`
+contains the media statement, the write guard refuses the stale-`lastValid`
+case with the §3.0 message, and a 0.3 build opening the project fails with
+`Unknown function: video.` without adopting or rewriting anything.
+
+**M1 verification status (as shipped in 0.4.0).** The target above is
+production scale. What this branch actually verified is narrower, and the
+difference is deliberate rather than implied:
+
+- **Verified automatically on Windows, against the real executable.** A
+  generated 2-second, 160×90, 10 fps H.264 MP4 imports and probes with its real
+  duration and display size; the clip appears with its probed source window;
+  the project saves, reopens through the real Home → Recents flow, and the
+  preview paints the correct source frame after seeking — blue at 1.5 s, red
+  at 0.5 s, read from the app-origin canvas. Range handling (206/416/HEAD,
+  authorization before ranges), the media save round-trip and the 512 MiB
+  bounded-response case are covered by the same run.
+- **Verified by tests, not by launching an old binary.** The saved `lastValid`
+  keeps the media statement, the write guard refuses the stale-`lastValid`
+  case, the version ceiling reports the newer-version message, and the 0.3
+  parser's `Unknown function: video.` rejection is established from the 0.3
+  source (its root-name allowlist has no `video`) rather than by running a
+  0.3 executable against the file.
+- **Not verified at production scale.** No 30-second 1080p import, no
+  sustained playback session, no hardware-decoder variation, no 4K or
+  high-bitrate source, and no other container/codec combinations. The
+  2-second fixture exercises the same decode and paint path, but not the
+  timing, memory, or decoder behaviour of a real edit. The 30-second 1080p
+  walkthrough remains an open manual acceptance check, not a proven claim.
+- **What the 512 MiB case proves.** A sparse 512 MiB fixture behind an
+  open-ended `Range: bytes=0-` is answered with an 8 MiB `206` prefix and a
+  matching `Content-Range`, and the app process does not grow by the file size.
+  That is evidence for the bounded-response rule only. The file is not played,
+  so it says nothing about full-length playback, long-session stability or
+  sustained decode throughput, and the cap does not apply to range-less
+  requests, which are still served whole.
 
 Why this slice first: it proves the three riskiest assumptions at once — that
 the pure engine can carry real media without a format change, that the

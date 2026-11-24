@@ -1,11 +1,15 @@
 # Later milestones
 
-The current milestone tests code, preview, timeline, reusable parameters, and local Windows project editing.
+The current milestone adds real video import, decode, seek and muted preview playback on top of code, preview, timeline, reusable parameters, and local Windows project editing.
 
 ## Basic editor growth
 
-- Real image/video/audio import, source-media timing and missing-file handling.
-- Reliable rendering/export, followed by transitions, keyframes and fuller track organization. Multi-selection/group movement, basic layer controls and preview transforms are implemented in 0.3.0.
+Implemented: image import with authorized serving and missing-file handling, and M1 video import — container probing, authorized range serving, timeline placement, real decoded frames, seek, and muted playback in the preview (0.4.0). A project that uses media is readable only by 0.4 and later; older builds refuse it instead of opening it and later dropping the media.
+
+Still ahead:
+
+- Audio playback, gain and waveform controls, video/audio synchronization, loop-safe audio, and the remaining media work: media-specific trim/split coverage, codec rejection, and long-file/scrubbing hardening.
+- Rendered video/audio export (Stage 8), followed by transitions, keyframes and fuller track organization. Multi-selection/group movement, basic layer controls and preview transforms are implemented in 0.3.0.
 - Further usability work guided by hands-on Windows testing, including mixed display scaling, IME input and accessibility.
 
 ## Community extensions
