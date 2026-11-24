@@ -1,7 +1,7 @@
 # Stage 6 — Media Engine: Technical Assessment & Implementation Plan
 
-Status: **approved direction, implementation not started**
-Base: `main` @ `d37d977` (Stage 5 merged), working tree clean
+Status: **planning complete; implementation tracked separately as M1**
+Base: `main` @ `d37d977` (Stage 5 merged). §1–§2 are a snapshot of that baseline.
 Scope note: rendering/export is **out of scope** (Stage 8). This stage ends at
 "video and audio can be imported, placed, trimmed, played back, and relinked".
 
@@ -21,6 +21,11 @@ Scope note: rendering/export is **out of scope** (Stage 8). This stage ends at
 ---
 
 ## 1. Current architecture (as built)
+
+> Baseline snapshot of `main` @ `d37d977`, before Stage 6. M1 work on
+> `stage-6-media-engine-m1` has since extended the clip vocabulary, asset
+> kinds, bridge surface and project-format guard; read §1–§2 as the
+> pre-Stage-6 starting point, not as the current branch state.
 
 ### 1.1 Document model — text is the single source of truth
 
@@ -170,6 +175,13 @@ Guiding decisions:
 Older builds cannot be patched, so the guard has to be carried by the files the
 new build writes and enforced at the new build's own choke points.
 
+**Requirement.** An older build must either open a media project with its media
+intact or refuse it outright. It must never adopt the project and later rewrite
+it as if the media were gone. Because the old binary cannot be changed, the only
+lever is the *saved file*: a file that uses media must be unreadable by any build
+that does not understand that media. The same rule applies to any
+future clip type added under v1 — `declaresMedia` must be extended with it.
+
 **What a 0.3 build actually does with a media project** (verified in code):
 
 1. `src-tauri/src/project_files.rs` validates structure only — it does not
@@ -180,14 +192,15 @@ new build writes and enforced at the new build's own choke points.
    history.
 
 So if `lastValid` contains a media statement, a 0.3 build throws
-`Line N: Unknown function: video.` (`engine.mjs:180–181`) before adopting the
-document: no history entry, no autosave, no save path, project file untouched.
+`Line N: Unknown function: video.` (in `engine.mjs::compile` at `d37d977`)
+before adopting the document: no history entry, no autosave, no save path,
+project file untouched.
 
 **The invariant:** a saved project that uses media must have a `lastValid`
 that also uses media. Every older build then fails at open, by construction.
 
 **Why the invariant is not automatic.** `commit()` only advances `lastValid`
-while the source compiles, but `saveSnapshot` (`app.mjs:892`) serializes the
+while the source compiles, but `saveSnapshot` (`app.mjs`) serializes the
 *current* source and `encodeProject` compiles only `lastValid`. An author can
 therefore: import a video → delete the media lines (a valid compile, making
 `lastValid` media-free) → type broken media text. The saved file would then
@@ -196,7 +209,7 @@ case an older build would accept.
 
 **Guard design**
 
-- **G1 — Save-time invariant enforcement (primary).** `encodeProject` gains a
+- **C1 — Save-time invariant enforcement (primary).** `encodeProject` gains a
   media-safety check on write: scan `source` for line-anchored `video(` /
   `audio(` statements (skipping `//` lines, mirroring the engine's line-based
   parser) and require `lastValid` to contain at least one. On violation it
@@ -210,18 +223,19 @@ case an older build would accept.
   not the write guard), so the user can open it, see the error banner, repair
   it and save. Failing closed on the write is the only way to guarantee an
   older build never sees a media `source` with a legacy `lastValid`.
-- **G2 — Version ceiling on open.** Split the current single
+- **C2 — Version ceiling on open.** Split the current single
   "Unsupported or invalid Framecode project." rejection: `version > 1` now
   reports "This project was created by a newer version of Framecode. Update
   Framecode to open it." This makes the v1 decision explicit and protects the
   next format change.
-- **G3 — Recovery and clipboard parity.** Recovery drafts go through
+- **C3 — Recovery and clipboard parity.** Recovery drafts go through
   `store.load` (which compiles `lastValid`), so a media draft fails to restore
   in an older build instead of half-adopting. Clipboard payloads are pasted
   through `commit`, which compiles, so a media clip pasted into an older build
   is rejected at paste. Both get regression tests rather than new code.
-- **G4 — User-facing provenance.** The media import flow and the preview meta
-  show "Media · requires Framecode 0.4+", and the release note documents that
+- **C4 — User-facing provenance.** The media import flow and the preview meta
+  show "Media · requires Framecode 0.4+" (0.4 is the app release that ships
+  this; the document format stays v1), and the release note documents that
   v1 files containing `video()`/`audio()` are intentionally unreadable by 0.3
   builds. This is the limit of what is achievable: the wording *inside* an old
   build is fixed, and it will read
@@ -247,6 +261,8 @@ case an older build would accept.
 - `tests/document.test.mjs`: `load` still compiles `lastValid` before mutating
   history (media case), and a media project survives
   `serialize → encodeProject → decodeProject → load`.
+- `tests/tauri-bridge.test.mjs`: `saveProject` and `writeRecovery` both route
+  through `encodeProject`, so no second writer can bypass the media guard.
 - `scripts/test-tauri.mjs`: save a media fixture in the real app, reopen it,
   and assert the on-disk `lastValid` still contains the media statement.
 
@@ -394,7 +410,7 @@ Dependencies: A+B+C.
 - [ ] A 500 MB file plays without the process growing by 500 MB.
 - [ ] Old v1 projects open unchanged; every existing test stays green.
 - [ ] A media project writes a `lastValid` that contains media, so a 0.3 build
-      throws `Unknown function: video.` at open and adopts nothing (§3.0 G1).
+      throws `Unknown function: video.` at open and adopts nothing (§3.0 C1).
 - [ ] Saving a source with media text but a media-free `lastValid` is refused
       with the §3.0 message, and the file is not written.
 - [ ] Opening a `version: 2` file reports the newer-version message, not the
@@ -475,8 +491,9 @@ A vertical slice, no audio, no playback sync yet:
    probed clip.
 6. Bridge methods + contract test + one real-app smoke assertion
    (206 on a range request, frame painted after seek).
-7. §3.0 compatibility guard: save-time media invariant (G1) + version ceiling
-   (G2) + provenance note (G4), with the §3.0 tests.
+7. §3.0 compatibility guard: save-time media invariant (C1) + version ceiling
+   (C2) + provenance note (C4), plus the recovery/clipboard parity tests (C3),
+   with the §3.0 tests.
 
 Definition of done: on Windows, import a 30 s 1080p MP4, see it in the
 timeline with a 30 s source window, click at 0:12 and see the correct frame,
