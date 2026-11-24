@@ -1,4 +1,4 @@
-﻿//! Asset authorization and serving for the Tauri backend (Stage 4).
+//! Asset authorization and serving for the Tauri backend (Stage 4).
 //!
 //! Ported from the Electron main process (`desktop/main.cjs`:
 //! `installProtocol`, `authorizeAsset`, `scanForAssets`, `recovery:relink`)
@@ -115,6 +115,40 @@ pub struct FileSlice {
     pub length: u64,
     pub total: u64,
     pub partial: bool,
+}
+
+/// The most one media response may carry. The overridden protocol answers
+/// with a complete `Vec<u8>` (no chunked streaming), so an open-ended
+/// `Range: bytes=0-` on a 500 MB clip would otherwise allocate 500 MB in
+/// the app process. A bounded 206 prefix keeps the honest `Content-Range`
+/// and lets the media element request the next window.
+pub const MAX_MEDIA_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The asset kind implied by a path's extension, if it is an allowed asset.
+pub fn kind_for_path(path: &str) -> Option<AssetKind> {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(extension_asset)
+        .map(|(kind, _)| kind)
+}
+
+/// Bounds a range response for streamed media. Images are never capped:
+/// they are already limited to 50 MiB and are loaded whole. A truncated
+/// slice stays `partial`, so the caller still answers 206 with a
+/// `Content-Range` that describes exactly the bytes it sends.
+pub fn cap_media_slice(slice: FileSlice, kind: Option<AssetKind>) -> FileSlice {
+    if matches!(kind, Some(AssetKind::Video | AssetKind::Audio))
+        && slice.length > MAX_MEDIA_RESPONSE_BYTES
+    {
+        FileSlice {
+            length: MAX_MEDIA_RESPONSE_BYTES,
+            partial: true,
+            ..slice
+        }
+    } else {
+        slice
+    }
 }
 
 /// Resolves a `Range` header against the file length. Returns `Err(416)`
@@ -1166,27 +1200,57 @@ mod tests {
         let slice = |range: Option<&str>| resolve_file_slice(1000, range);
         assert_eq!(
             slice(None),
-            Ok(FileSlice { start: 0, length: 1000, total: 1000, partial: false })
+            Ok(FileSlice {
+                start: 0,
+                length: 1000,
+                total: 1000,
+                partial: false
+            })
         );
         assert_eq!(
             slice(Some("bytes=0-1023")),
-            Ok(FileSlice { start: 0, length: 1000, total: 1000, partial: true })
+            Ok(FileSlice {
+                start: 0,
+                length: 1000,
+                total: 1000,
+                partial: true
+            })
         );
         assert_eq!(
             slice(Some("bytes=900-")),
-            Ok(FileSlice { start: 900, length: 100, total: 1000, partial: true })
+            Ok(FileSlice {
+                start: 900,
+                length: 100,
+                total: 1000,
+                partial: true
+            })
         );
         assert_eq!(
             slice(Some("bytes=-100")),
-            Ok(FileSlice { start: 900, length: 100, total: 1000, partial: true })
+            Ok(FileSlice {
+                start: 900,
+                length: 100,
+                total: 1000,
+                partial: true
+            })
         );
         assert_eq!(
             slice(Some("bytes=0-0")),
-            Ok(FileSlice { start: 0, length: 1, total: 1000, partial: true })
+            Ok(FileSlice {
+                start: 0,
+                length: 1,
+                total: 1000,
+                partial: true
+            })
         );
         assert_eq!(
             slice(Some("bytes=0-999999999999")),
-            Ok(FileSlice { start: 0, length: 1000, total: 1000, partial: true })
+            Ok(FileSlice {
+                start: 0,
+                length: 1000,
+                total: 1000,
+                partial: true
+            })
         );
         for bad in [
             "bytes=200-100",
@@ -1200,9 +1264,64 @@ mod tests {
         }
         assert_eq!(
             resolve_file_slice(0, None),
-            Ok(FileSlice { start: 0, length: 0, total: 0, partial: false })
+            Ok(FileSlice {
+                start: 0,
+                length: 0,
+                total: 0,
+                partial: false
+            })
         );
         assert_eq!(resolve_file_slice(0, Some("bytes=0-")), Err(416));
+    }
+
+    #[test]
+    fn media_ranges_are_capped_to_a_bounded_prefix() {
+        let total = 512 * 1024 * 1024u64;
+        let open = resolve_file_slice(total, Some("bytes=0-")).unwrap();
+        let capped = cap_media_slice(open, kind_for_path("C:/clips/large.mp4"));
+        assert_eq!(capped.start, 0);
+        assert_eq!(capped.length, MAX_MEDIA_RESPONSE_BYTES);
+        assert_eq!(capped.total, total);
+        assert!(capped.partial, "a capped prefix still answers 206");
+        // The next window is a normal satisfiable range; an open-ended one
+        // is capped again from its own start.
+        let next = resolve_file_slice(total, Some("bytes=8388608-8389631")).unwrap();
+        assert_eq!(
+            cap_media_slice(next, kind_for_path("C:/clips/large.webm")),
+            next
+        );
+        let open_next = resolve_file_slice(total, Some("bytes=8388608-")).unwrap();
+        let capped_next = cap_media_slice(open_next, kind_for_path("C:/clips/large.webm"));
+        assert_eq!(capped_next.start, MAX_MEDIA_RESPONSE_BYTES);
+        assert_eq!(capped_next.length, MAX_MEDIA_RESPONSE_BYTES);
+        // A closed range under the ceiling is untouched.
+        let small = resolve_file_slice(total, Some("bytes=0-1023")).unwrap();
+        assert_eq!(
+            cap_media_slice(small, kind_for_path("C:/clips/a.m4v")),
+            small
+        );
+        // Audio is streamed the same way.
+        assert_eq!(
+            cap_media_slice(open, kind_for_path("C:/audio/score.mp3")).length,
+            MAX_MEDIA_RESPONSE_BYTES
+        );
+    }
+
+    #[test]
+    fn images_and_unknown_paths_are_never_capped() {
+        let total = 512 * 1024 * 1024u64;
+        let open = resolve_file_slice(total, Some("bytes=0-")).unwrap();
+        assert_eq!(
+            cap_media_slice(open, kind_for_path("C:/img/photo.png")),
+            open
+        );
+        assert_eq!(
+            cap_media_slice(open, kind_for_path("C:/img/photo.jpg")),
+            open
+        );
+        assert_eq!(cap_media_slice(open, None), open);
+        assert_eq!(kind_for_path("C:/clips/a.MP4"), Some(AssetKind::Video));
+        assert_eq!(kind_for_path("C:/clips/a.txt"), None);
     }
 
     #[test]

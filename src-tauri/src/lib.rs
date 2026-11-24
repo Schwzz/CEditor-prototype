@@ -238,6 +238,17 @@ fn tauri_protocol<R: tauri::Runtime>(
                         )
                     }
                 };
+                // Stage 6 memory bound: a range response is a complete body
+                // in this protocol, so an open-ended `bytes=0-` on a large
+                // clip is capped to an 8 MiB 206 prefix instead of the whole
+                // file. A range-less GET still asks for the whole
+                // representation and stays whole (the media element always
+                // sends a Range).
+                let slice = if slice.partial {
+                    assets::cap_media_slice(slice, assets::kind_for_path(&path))
+                } else {
+                    slice
+                };
                 let status = if slice.partial { 206 } else { 200 };
                 let mut headers: Vec<(&str, String)> = vec![
                     ("Accept-Ranges", "bytes".to_string()),
