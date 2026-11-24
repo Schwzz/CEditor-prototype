@@ -266,6 +266,62 @@ test("video geometry and painting use the decoded frame and real size", () => {
   assert.equal(draws[0][4], 720);
 });
 
+test("video fit rules match the image box math", () => {
+  const model = modelWith(
+    `video("cover").at(0).for(2).source("C:/clips/tall.mp4").fit("cover")`,
+    `video("fill").at(2).for(2).source("C:/clips/tall.mp4").fit("fill")`,
+  );
+  const { pool } = poolWithFakes();
+  for (const clip of model.clips) {
+    const entry = pool.entryFor(clip);
+    entry.element.videoWidth = 1080;
+    entry.element.videoHeight = 1920;
+    entry.element.emit("loadedmetadata");
+  }
+  const itemsAt = (time) =>
+    frameGeometry(
+      { measureText: () => ({ width: 0 }) },
+      model,
+      time,
+      null,
+      pool,
+    );
+  const cover = itemsAt(1).find((item) => item.clip.id === "cover");
+  const fill = itemsAt(2.5).find((item) => item.clip.id === "fill");
+  assert.equal(fill.width, 1280);
+  assert.equal(fill.height, 720);
+  assert.equal(cover.width, 1280, "cover fills the box width");
+  assert.ok(cover.height > 720, "cover overflows vertically and is clipped");
+});
+
+test("a video that has not decoded paints the DECODING placeholder", () => {
+  const model = modelWith(clipSource("loading", 0, 5));
+  const { pool } = poolWithFakes();
+  const entry = pool.entryFor(model.clips[0]);
+  entry.ready = false;
+  entry.element.readyState = 0;
+  const labels = [];
+  const draws = [];
+  const context = {
+    save() {},
+    restore() {},
+    clearRect() {},
+    fillRect() {},
+    strokeRect() {},
+    fillText: (text) => labels.push(text),
+    beginPath() {},
+    rect() {},
+    clip() {},
+    translate() {},
+    rotate() {},
+    scale() {},
+    drawImage: (...args) => draws.push(args),
+  };
+  renderFrame(context, model, 1, { videoCache: pool });
+  assert.equal(draws.length, 0, "no frame is painted before HAVE_CURRENT_DATA");
+  assert.deepEqual(labels, ["DECODING"]);
+});
+
 test("pausing the pool pauses every decoder it owns", () => {
   const model = modelWith(clipSource("a", 0, 5), clipSource("b", 5, 5));
   const { pool, elements } = poolWithFakes();
