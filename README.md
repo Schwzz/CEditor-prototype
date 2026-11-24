@@ -8,7 +8,7 @@ This is a prototype for testing the interaction model. It does not import or exp
 
 1. Open this repository's **Actions** tab, then **Windows desktop prototype**.
 2. Open a successful run and download **Framecode-Tauri-Windows-x64** under Artifacts. GitHub may require you to sign in to download it.
-3. Extract the ZIP and run `framecode.exe`, or use the `Framecode_0.3.0_x64-setup.exe` NSIS installer to install the app and create shortcuts.
+3. Extract the ZIP and run `framecode.exe`, or use the `Framecode_0.4.0_x64-setup.exe` NSIS installer to install the app and create shortcuts.
 
 The packaged app includes its runtime. You do not need Node.js, a separate terminal, a browser tab, a server, or an account to use it. These prototype builds are unsigned. Artifacts are retained for 30 days; a new workflow run rebuilds them.
 

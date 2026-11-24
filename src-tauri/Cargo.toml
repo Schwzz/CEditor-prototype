@@ -1,6 +1,6 @@
 [package]
 name = "framecode"
-version = "0.3.0"
+version = "0.4.0"
 description = "Framecode Windows desktop code-and-timeline editor prototype"
 edition = "2021"
 
