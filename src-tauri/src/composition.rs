@@ -838,8 +838,10 @@ pub fn clip_sources(source: &str) -> Result<Vec<ClipSource>, String> {
     Ok(sources)
 }
 
-/// The image-only view of [`clip_sources`], kept for callers that still
-/// want plain image paths (the existing Stage 4 tests and image relinking).
+/// The image-only view of [`clip_sources`], kept for the Stage 4 tests that
+/// still assert plain image paths. Production callers use `clip_sources`,
+/// which carries the kind authorization needs.
+#[cfg(test)]
 pub fn image_clip_sources(source: &str) -> Result<Vec<String>, String> {
     Ok(clip_sources(source)?
         .into_iter()
@@ -883,8 +885,14 @@ mod tests {
         assert_eq!(
             clip_sources(&source).unwrap(),
             vec![
-                ClipSource { kind: ClipKind::Video, path: video.to_string() },
-                ClipSource { kind: ClipKind::Audio, path: audio.to_string() },
+                ClipSource {
+                    kind: ClipKind::Video,
+                    path: video.to_string()
+                },
+                ClipSource {
+                    kind: ClipKind::Audio,
+                    path: audio.to_string()
+                },
             ]
         );
         assert_eq!(
@@ -910,7 +918,13 @@ mod tests {
             .contains("Clip exceeds its animation source window."));
         // Audio has no visual surface: opacity/scale/rotation/position/fit
         // are all rejected, like the engine.
-        for method in ["opacity(0.5)", "scale(2)", "rotation(15)", "position(1, 2)", "fit(\"cover\")"] {
+        for method in [
+            "opacity(0.5)",
+            "scale(2)",
+            "rotation(15)",
+            "position(1, 2)",
+            "fit(\"cover\")",
+        ] {
             let source = format!(
                 "composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5).source(\"C:\\\\a.mp3\").{method}"
             );
@@ -940,12 +954,16 @@ mod tests {
                 "gain {gain}"
             );
         }
-        assert!(clip_sources("composition(\"A\").duration(10)\nvideo(\"v\").at(0).for(5)")
-            .unwrap_err()
-            .contains("Video clips require a source path."));
-        assert!(clip_sources("composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5)")
-            .unwrap_err()
-            .contains("Audio clips require a source path."));
+        assert!(
+            clip_sources("composition(\"A\").duration(10)\nvideo(\"v\").at(0).for(5)")
+                .unwrap_err()
+                .contains("Video clips require a source path.")
+        );
+        assert!(
+            clip_sources("composition(\"A\").duration(10)\naudio(\"a\").at(0).for(5)")
+                .unwrap_err()
+                .contains("Audio clips require a source path.")
+        );
     }
 
     #[test]

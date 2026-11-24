@@ -1,4 +1,4 @@
-﻿//! Media probing for the Stage 6 media engine.
+//! Media probing for the Stage 6 media engine.
 //!
 //! M1 needs duration and display size before a clip can be inserted:
 //! `.sourceDuration()` is author-declared, so import writes the probed
@@ -69,8 +69,7 @@ pub fn probe_media(path: &str) -> Result<MediaProbe, String> {
     if metadata.len() > MAX_MEDIA_BYTES {
         return Err("Media file exceeds the 4 GiB limit.".to_string());
     }
-    let extension = extension(path)
-        .ok_or_else(|| "Unsupported media format.".to_string())?;
+    let extension = extension(path).ok_or_else(|| "Unsupported media format.".to_string())?;
     if !VIDEO_EXTENSIONS.contains(&extension.as_str())
         && !AUDIO_EXTENSIONS.contains(&extension.as_str())
     {
@@ -79,10 +78,7 @@ pub fn probe_media(path: &str) -> Result<MediaProbe, String> {
     if extension == "webm" {
         return probe_webm(file_path);
     }
-    if VIDEO_EXTENSIONS.contains(&extension.as_str())
-        || extension == "m4a"
-        || extension == "aac"
-    {
+    if VIDEO_EXTENSIONS.contains(&extension.as_str()) || extension == "m4a" || extension == "aac" {
         return probe_mp4(file_path, metadata.len());
     }
     Err(format!(
@@ -275,7 +271,9 @@ fn float_of(bytes: &[u8], element: Element) -> Option<f64> {
 
 fn string_of(bytes: &[u8], element: Element) -> Option<String> {
     let data = bytes.get(element.start..element.end)?;
-    let text = String::from_utf8_lossy(data).trim_end_matches('\0').to_string();
+    let text = String::from_utf8_lossy(data)
+        .trim_end_matches('\0')
+        .to_string();
     (!text.is_empty()).then_some(text)
 }
 
@@ -295,7 +293,14 @@ const CODEC_ID: u64 = 0x86;
 /// `None` when the bytes are not a usable Matroska/WebM header.
 fn parse_webm_header(
     bytes: &[u8],
-) -> Option<(f64, Option<u32>, Option<u32>, Option<f64>, Option<String>, Option<String>)> {
+) -> Option<(
+    f64,
+    Option<u32>,
+    Option<u32>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+)> {
     let top = elements(bytes, 0, bytes.len());
     let segment = top.iter().find(|element| element.id == SEGMENT)?;
     let children = elements(bytes, segment.start, segment.end);
@@ -463,7 +468,10 @@ mod tests {
         let corrupt = dir.join("broken.mp4");
         fs::write(&corrupt, b"not an mp4").unwrap();
         let error = probe_media(&corrupt.to_string_lossy()).unwrap_err();
-        assert!(!error.is_empty(), "a corrupt file yields a structured error");
+        assert!(
+            !error.is_empty(),
+            "a corrupt file yields a structured error"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -471,5 +479,4 @@ mod tests {
     fn the_media_ceiling_is_four_gibibytes() {
         assert_eq!(MAX_MEDIA_BYTES, 4 * 1024 * 1024 * 1024);
     }
-
 }

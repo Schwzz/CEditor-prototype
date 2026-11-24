@@ -150,11 +150,7 @@ impl Dialogs for TauriDialogs {
     fn pick_media(&self, kind: &str) -> Option<String> {
         use tauri_plugin_dialog::DialogExt;
         let (title, filter_name, extensions): (&str, &str, &[&str]) = match kind {
-            "video" => (
-                "Import video",
-                "Videos",
-                &["mp4", "mov", "m4v", "webm"],
-            ),
+            "video" => ("Import video", "Videos", &["mp4", "mov", "m4v", "webm"]),
             "audio" => (
                 "Import audio",
                 "Audio",
