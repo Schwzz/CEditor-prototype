@@ -131,3 +131,25 @@ test("a newer project version reports the update message, not the generic one", 
     /This project was created by a newer version of Framecode\. Update Framecode to open it\./,
   );
 });
+test("C4 provenance names the 0.4 requirement in the import flow and preview meta", async () => {
+  const { MEDIA_PROVENANCE_MESSAGE } = await import("../src/core/project-format.mjs");
+  assert.equal(MEDIA_PROVENANCE_MESSAGE, "Media · requires Framecode 0.4+");
+  const html = await readFile(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="mediaProvenance"/);
+  const app = await readFile(new URL("../src/renderer/app.mjs", import.meta.url), "utf8");
+  // The preview meta and the import toast both surface the same constant.
+  assert.ok(
+    (app.match(/MEDIA_PROVENANCE_MESSAGE/g) || []).length >= 3,
+    "the message is imported, rendered in the preview meta, and toasted on import",
+  );
+});
+test("the document CSP permits media from the app origin", async () => {
+  // Regression guard for the Stage 6 decode smoke: with `default-src 'none'`
+  // and no media-src, Chromium refuses every media element load (the element
+  // reports "Media load rejected by URL safety check") even though fetch() to
+  // the same authorized URL succeeds.
+  const html = await readFile(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+  const csp =
+    html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)?.[1] ?? "";
+  assert.match(csp, /(?:^|;\s*)media-src 'self'(?:;|$)/);
+});

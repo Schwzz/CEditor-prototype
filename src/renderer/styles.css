@@ -1794,6 +1794,13 @@ main {
   color: var(--text-muted);
   font-size: 10px;
 }
+.preview-meta .media-provenance {
+  padding: 1px 7px;
+  border: 1px solid #4b5638;
+  border-radius: 999px;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
 .stage-area {
   min-height: 0;
   padding: 14px;

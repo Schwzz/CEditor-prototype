@@ -35,6 +35,13 @@ function declaresMedia(source) {
 export const MEDIA_WRITE_GUARD_MESSAGE =
   "This project uses media, but its last valid composition does not. Saving is blocked: an older Framecode version could open it and silently drop the media. Fix the composition error, then save again.";
 
+/**
+ * C4 provenance: the document format stays v1, but a v1 file that declares
+ * `video()` / `audio()` is only meaningful in 0.4+. Older builds reject it
+ * at compile time (`Unknown function: video.`) instead of adopting it.
+ */
+export const MEDIA_PROVENANCE_MESSAGE = "Media · requires Framecode 0.4+";
+
 function byteLength(text) {
   return new TextEncoder().encode(text).length;
 }

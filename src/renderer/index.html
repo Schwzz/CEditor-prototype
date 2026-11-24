@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: framecode:; font-src 'self'; connect-src 'self' framecode:; base-uri 'none'; form-action 'none'; frame-src 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: framecode:; media-src 'self'; font-src 'self'; connect-src 'self' framecode:; base-uri 'none'; form-action 'none'; frame-src 'none'"
     />
     <title>Framecode</title>
     <link rel="stylesheet" href="app.css" />
@@ -97,6 +97,12 @@
             <div class="preview-meta">
               <span id="previewLabel">ORBIT STUDY</span>
               <span class="muted mono">1920 × 1080 · 30 fps</span>
+              <span
+                id="mediaProvenance"
+                class="muted mono media-provenance"
+                hidden
+                >Media · requires Framecode 0.4+</span
+              >
             </div>
           </div>
           <div class="stage-area">

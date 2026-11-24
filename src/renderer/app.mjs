@@ -27,6 +27,7 @@ import { createPreview } from "./preview.mjs";
 import { createLayerLabel, renameClip } from "./layers.mjs";
 import { createTimeline } from "./timeline.mjs";
 import { mountGuide } from "./guide.mjs";
+import { MEDIA_PROVENANCE_MESSAGE } from "../core/project-format.mjs";
 
 const $ = (id) => document.getElementById(id),
   desktop = window.framecodeDesktop;
@@ -426,6 +427,12 @@ function render(full = true) {
   renderSelection();
   $("projectName").textContent = store.model.name;
   $("previewLabel").textContent = store.model.name.toUpperCase();
+  // C4: the format stays v1, but media statements need the 0.4+ engine.
+  const hasMedia = store.model.clips.some(
+    (clip) => clip.type === "video" || clip.type === "audio",
+  );
+  $("mediaProvenance").hidden = !hasMedia;
+  $("mediaProvenance").textContent = MEDIA_PROVENANCE_MESSAGE;
   $("lineCount").textContent = store.source.split("\n").length + " lines";
   $("clipCount").textContent = store.model.clips.length + " clips";
   $("durationLabel").textContent = store.model.duration.toFixed(1) + "s";
@@ -679,8 +686,11 @@ async function runImportVideo() {
   const nextSource =
     store.source.trimEnd() +
     `\nvideo(${JSON.stringify(name)}).at(${at}).for(${length}).source(${JSON.stringify(imported)}).sourceDuration(${sourceDuration})`;
-  if (commit(nextSource, "Import video", name))
+  if (commit(nextSource, "Import video", name)) {
     selectClip(name, { reveal: true });
+    // C4: tell the author the project is now 0.4+ only.
+    toast(`${MEDIA_PROVENANCE_MESSAGE} · older builds cannot open this project.`);
+  }
 }
 $("reset").onclick = () => {
   setPlaying(false);
