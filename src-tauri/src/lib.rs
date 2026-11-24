@@ -11,6 +11,7 @@
 mod assets;
 mod composition;
 mod file_operations;
+mod media;
 mod project_files;
 mod recents;
 mod recovery;
@@ -118,24 +119,25 @@ impl Default for AssetState {
 
 /// The Electron `scanForAssets` + `__authorizedAssets.clear()` pair: a
 /// successful project adoption drops the webview's authorized set and
-/// re-authorizes the image paths referenced by `source` and `lastValid`.
+/// re-authorizes the asset paths referenced by `source` and `lastValid`.
 /// The scan is the engine-faithful compile in `composition.rs`: only the
-/// resolved `source` paths of valid image clips are candidates, and a
-/// composition that does not compile contributes nothing (fail-closed).
-/// The same extension/size/absolute-path gates bound every authorization,
-/// so non-image paths can never be authorized.
+/// resolved `source` paths of valid image/video/audio clips are candidates,
+/// and a composition that does not compile contributes nothing
+/// (fail-closed). The same extension/size/absolute-path gates bound every
+/// authorization, so paths of unauthorized asset types can never be
+/// authorized.
 fn scan_project_assets(assets: &AssetState, label: &str, project: &Value) {
     let mut seen = std::collections::HashSet::new();
     for key in ["source", "lastValid"] {
         let Some(source) = project.get(key).and_then(Value::as_str) else {
             continue;
         };
-        let Ok(sources) = composition::image_clip_sources(source) else {
+        let Ok(clips) = composition::clip_sources(source) else {
             continue;
         };
-        for path in sources {
-            if seen.insert(path.clone()) {
-                assets.authorizer.authorize(label, &path);
+        for clip in clips {
+            if seen.insert(clip.path.clone()) {
+                assets.authorizer.authorize(label, &clip.path);
             }
         }
     }
@@ -156,11 +158,15 @@ fn tauri_protocol<R: tauri::Runtime>(
     fn response(
         status: u16,
         content_type: Option<&str>,
+        headers: &[(&str, String)],
         body: Vec<u8>,
     ) -> tauri::http::Response<Vec<u8>> {
         let mut builder = tauri::http::Response::builder().status(status);
         if let Some(content_type) = content_type {
             builder = builder.header("Content-Type", content_type);
+        }
+        for (name, value) in headers {
+            builder = builder.header(*name, value);
         }
         builder.body(body).expect("valid protocol response")
     }
@@ -198,34 +204,96 @@ fn tauri_protocol<R: tauri::Runtime>(
                 } else {
                     b""
                 };
-                response(status, None, body.to_vec())
+                response(status, None, &[], body.to_vec())
             }
-            assets::AssetDecision::Serve { path, content_type } => match std::fs::read(&path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    response(404, None, Vec::new())
+            // Stage 6: authorization has already passed, so byte accounting
+            // (and only byte accounting) happens here. Ranges keep WebView2's
+            // media element seeking; a malformed or unsatisfiable Range is
+            // 416 with the `bytes */total` form the spec requires.
+            assets::AssetDecision::Serve { path, content_type } => {
+                let total = match std::fs::metadata(&path) {
+                    Ok(metadata) => metadata.len(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return response(404, None, &[], Vec::new())
+                    }
+                    Err(_) => return response(403, None, &[], Vec::new()),
+                };
+                // An unreadable Range header value is malformed, not absent.
+                let range_header = request.headers().get("range");
+                let range = match range_header {
+                    Some(_) => Some(range_header.and_then(|v| v.to_str().ok()).unwrap_or("")),
+                    None => None,
+                };
+                let slice = match assets::resolve_file_slice(total, range) {
+                    Ok(slice) => slice,
+                    Err(_) => {
+                        return response(
+                            416,
+                            None,
+                            &[
+                                ("Accept-Ranges", "bytes".to_string()),
+                                ("Content-Range", format!("bytes */{total}")),
+                            ],
+                            Vec::new(),
+                        )
+                    }
+                };
+                // Stage 6 memory bound: a range response is a complete body
+                // in this protocol, so an open-ended `bytes=0-` on a large
+                // clip is capped to an 8 MiB 206 prefix instead of the whole
+                // file. A range-less GET still asks for the whole
+                // representation and stays whole (the media element always
+                // sends a Range).
+                let slice = if slice.partial {
+                    assets::cap_media_slice(slice, assets::kind_for_path(&path))
+                } else {
+                    slice
+                };
+                let status = if slice.partial { 206 } else { 200 };
+                let mut headers: Vec<(&str, String)> = vec![
+                    ("Accept-Ranges", "bytes".to_string()),
+                    ("Content-Length", slice.length.to_string()),
+                ];
+                if slice.partial {
+                    headers.push((
+                        "Content-Range",
+                        format!(
+                            "bytes {}-{}/{}",
+                            slice.start,
+                            slice.start + slice.length - 1,
+                            slice.total
+                        ),
+                    ));
                 }
-                Err(_) => response(403, None, Vec::new()),
-                Ok(bytes) => response(
-                    200,
-                    Some(content_type),
-                    if method == "HEAD" { Vec::new() } else { bytes },
-                ),
-            },
+                let body = if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    match read_file_slice(&path, slice) {
+                        Ok(body) => body,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            return response(404, None, &[], Vec::new())
+                        }
+                        Err(_) => return response(403, None, &[], Vec::new()),
+                    }
+                };
+                response(status, Some(content_type), &headers, body)
+            }
         };
     }
 
     // App files: GET/HEAD only, exactly like the Electron files map's
     // combined guard (a POST to an app file is 404 there, not 405).
     if method != "GET" && method != "HEAD" {
-        return response(404, None, b"Not found".to_vec());
+        return response(404, None, &[], b"Not found".to_vec());
     }
     match assets::decide_app_file_or_root(&path) {
-        None => response(404, None, b"Not found".to_vec()),
+        None => response(404, None, &[], b"Not found".to_vec()),
         Some((key, content_type)) => match ctx.app_handle().asset_resolver().get(key.to_string()) {
-            None => response(404, None, b"Not found".to_vec()),
+            None => response(404, None, &[], b"Not found".to_vec()),
             Some(asset) => response(
                 200,
                 Some(content_type),
+                &[],
                 if method == "HEAD" {
                     Vec::new()
                 } else {
@@ -234,6 +302,27 @@ fn tauri_protocol<R: tauri::Runtime>(
             ),
         },
     }
+}
+
+/// Reads one resolved slice with a bounded 64 KiB buffer, so a multi-GiB
+/// media file is never allocated whole on the Rust side.
+fn read_file_slice(path: &str, slice: assets::FileSlice) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(slice.start))?;
+    let mut buffer = [0u8; 64 * 1024];
+    let mut body = Vec::with_capacity(slice.length.min(8 * 1024 * 1024) as usize);
+    let mut remaining = slice.length;
+    while remaining > 0 {
+        let want = (remaining as usize).min(buffer.len());
+        let read = file.read(&mut buffer[..want])?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    Ok(body)
 }
 
 fn with_stores<T>(
@@ -482,6 +571,59 @@ fn image_import_dialog(
         .map_err(|e| e.to_string())
 }
 
+/// The Stage 6 media import: `kind` is "video" or "audio", the picker is
+/// filtered accordingly, and the picked file must match the requested kind
+/// before authorization is minted here in Rust. Returns the picked path for
+/// the renderer's `video(...)`/`audio(...)` clip; canceling returns `None`.
+#[tauri::command]
+fn media_import_dialog(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    files: tauri::State<FileOperations>,
+    assets: tauri::State<AssetState>,
+    kind: String,
+) -> CommandResult<Option<String>> {
+    let dialogs = TauriDialogs::new(app);
+    files
+        .run_exclusive(|| {
+            let matches_kind: fn(&str) -> bool = match kind.as_str() {
+                "video" => media::is_video_path,
+                "audio" => media::is_audio_path,
+                _ => {
+                    return Err("Choose either a video or an audio file to import.".to_string())
+                }
+            };
+            let Some(path) = dialogs.pick_media(&kind) else {
+                return Ok(None);
+            };
+            if !matches_kind(&path) {
+                return Err(format!("Could not import {kind}: unsupported format."));
+            }
+            if assets.authorizer.authorize(window.label(), &path).is_none() {
+                return Err(format!(
+                    "Could not import {kind}: unsupported format, missing file, or exceeds size limit."
+                ));
+            }
+            Ok(Some(path))
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Probes an already-authorized media file (Stage 6). Requiring
+/// authorization keeps this command from acting as an arbitrary-path
+/// oracle; the answer is container metadata only, never file bytes.
+#[tauri::command]
+fn probe_media(
+    window: tauri::Window,
+    assets: tauri::State<AssetState>,
+    path: String,
+) -> CommandResult<media::MediaProbe> {
+    if !assets.authorizer.is_path_authorized(window.label(), &path) {
+        return Err("Media is not authorized for this window.".to_string());
+    }
+    media::probe_media(&path)
+}
+
 /// The Electron `recovery:relink` handler. The recovery file this backend
 /// wrote itself is re-read here — the renderer never supplies the document
 /// — and the candidate list comes from the engine-faithful compile scan in
@@ -533,6 +675,8 @@ pub fn run() {
             project_new,
             asset_token,
             image_import_dialog,
+            media_import_dialog,
+            probe_media,
             relink_recovery_assets,
             project_dirty,
             app_stage,
@@ -658,6 +802,87 @@ mod tests {
             assert_eq!(stores.recents.list().unwrap()[0].entry.name, "Added");
             assert!(stores.recovery.read().unwrap().is_some());
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn project_scan_authorizes_images_and_media_and_fails_closed() {
+        let dir = unique_dir("scan");
+        let image = dir.join("Still.png");
+        fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
+        let video = dir.join("Clip.mp4");
+        fs::write(&video, b"fake container").unwrap();
+        let audio = dir.join("Score.mp3");
+        fs::write(&audio, b"fake audio").unwrap();
+        let stray = dir.join("Stray.txt");
+        fs::write(&stray, b"text").unwrap();
+        let text = |path: &std::path::Path| path.to_string_lossy().replace('/', "\\");
+        let source = format!(
+            "composition(\"Scan\").duration(10)\n\
+             image(\"still\").at(0).for(2).source({})\n\
+             video(\"v\").at(2).for(5).source({})\n\
+             audio(\"a\").at(2).for(5).source({})\n\
+             image(\"bad\").at(8).for(2).source({})",
+            serde_json::to_string(&text(&image)).unwrap(),
+            serde_json::to_string(&text(&video)).unwrap(),
+            serde_json::to_string(&text(&audio)).unwrap(),
+            serde_json::to_string(&text(&stray)).unwrap(),
+        );
+        let assets = AssetState::default();
+        scan_project_assets(&assets, "main", &json!({ "source": source }));
+        assert!(assets.authorizer.is_path_authorized("main", &text(&image)));
+        assert!(assets.authorizer.is_path_authorized("main", &text(&video)));
+        assert!(assets.authorizer.is_path_authorized("main", &text(&audio)));
+        assert!(
+            !assets.authorizer.is_path_authorized("main", &text(&stray)),
+            "a .txt source fails the extension gate"
+        );
+        // A composition that does not compile contributes nothing.
+        scan_project_assets(
+            &assets,
+            "other",
+            &json!({ "source": "composition(\"Broken\").duration(5)\nvideo(\"v\").at(0).for(5).wobble(1)" }),
+        );
+        assert!(!assets.authorizer.is_path_authorized("other", &text(&video)));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn slices_read_exact_bytes_across_the_bounded_buffer_boundary() {
+        let dir = unique_dir("slice");
+        let path = dir.join("blob.bin");
+        let data: Vec<u8> = (0..200_000u32).map(|index| (index % 251) as u8).collect();
+        fs::write(&path, &data).unwrap();
+        let total = data.len() as u64;
+        let slice = assets::FileSlice {
+            start: 999,
+            length: 130_000,
+            total,
+            partial: true,
+        };
+        assert_eq!(
+            read_file_slice(&path.to_string_lossy(), slice).unwrap(),
+            &data[999..999 + 130_000],
+            "two bounded-buffer reads concatenate to the exact slice"
+        );
+        // A slice that runs past EOF yields the bytes that exist.
+        let short = assets::FileSlice {
+            start: total - 10,
+            length: 100,
+            total,
+            partial: true,
+        };
+        assert_eq!(
+            read_file_slice(&path.to_string_lossy(), short).unwrap(),
+            &data[data.len() - 10..]
+        );
+        let missing = assets::FileSlice {
+            start: 0,
+            length: 1,
+            total: 1,
+            partial: true,
+        };
+        assert!(read_file_slice(&dir.join("Gone.bin").to_string_lossy(), missing).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

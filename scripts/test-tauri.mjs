@@ -24,11 +24,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import {
+  closeSync,
   existsSync,
   openSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -119,6 +121,113 @@ writeFileSync(
       version: 1,
       source: assetFixtureSource,
       lastValid: assetFixtureSource,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+
+// Stage 6 smoke fixtures: a media project referencing a synthetic .mp4
+// container, plus a real decodable MP4 for the seek/paint half. The
+// synthetic file proves the parts an automated run can prove without
+// decoding: media clips are authorized by the project scan, byte ranges
+// are served on the app origin, the Range guard chain still answers 403
+// first, a media project saves with the clip intact, and probing refuses
+// non-media bytes with a structured error instead of a panic. The
+// decodable fixture then drives the real UI through a recent-project open,
+// seeks the transport, and reads the canvas pixels.
+const testVideoPath = join(tmpdir(), `framecode-stage6-smoke-${process.pid}.mp4`);
+const testVideoBytes = Buffer.alloc(4096);
+for (let i = 0; i < testVideoBytes.length; i += 1) testVideoBytes[i] = i % 251;
+writeFileSync(testVideoPath, testVideoBytes);
+const mediaFixturePath = join(
+  tmpdir(),
+  `framecode-stage6-smoke-${process.pid}.framecode.json`,
+);
+const mediaFixtureSource =
+  'composition("Stage6Smoke").duration(6)\nvideo("clip").at(0).for(5).source(' +
+  JSON.stringify(testVideoPath) +
+  ").sourceDuration(5)";
+writeFileSync(
+  mediaFixturePath,
+  JSON.stringify(
+    {
+      format: "framecode-project",
+      version: 1,
+      source: mediaFixtureSource,
+      lastValid: mediaFixtureSource,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+
+// Stage 6 decode fixture: a real 2-second H.264 MP4 (160x90, 10 fps) whose
+// first second is red and second second is blue. Committed under
+// tests/fixtures so the smoke run decodes actual video: seek to 0.5 s must
+// paint red and 1.5 s blue, which is only possible if the range-served
+// file decoded and the canvas accepted the frame (a tainted canvas would
+// also throw on getImageData).
+const decodeVideoPath = join(
+  process.cwd(),
+  "tests",
+  "fixtures",
+  "stage6-seek.mp4",
+);
+const decodeFixturePath = join(
+  tmpdir(),
+  `framecode-stage6-decode-${process.pid}.framecode.json`,
+);
+const decodeFixtureSource =
+  'composition("Stage6Decode").duration(6)\nvideo("clip").at(0).for(2).source(' +
+  JSON.stringify(decodeVideoPath) +
+  ").sourceDuration(2).position(960, 540)";
+writeFileSync(
+  decodeFixturePath,
+  JSON.stringify(
+    {
+      format: "framecode-project",
+      version: 1,
+      source: decodeFixtureSource,
+      lastValid: decodeFixtureSource,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+
+// Stage 6 memory fixture: a 512 MiB media file (not decodable - only its
+// size matters) behind a project that authorizes it. `Range: bytes=0-` on
+// it is the request a media element makes; the response must be a bounded
+// 206 prefix, so the app process must not grow by the file size.
+const LARGE_VIDEO_BYTES = 512 * 1024 * 1024;
+const largeVideoPath = join(
+  tmpdir(),
+  `framecode-stage6-large-${process.pid}.mp4`,
+);
+{
+  const chunk = Buffer.alloc(64 * 1024, 0x5a);
+  const fd = openSync(largeVideoPath, "w");
+  for (let written = 0; written < LARGE_VIDEO_BYTES; written += chunk.length)
+    writeSync(fd, chunk);
+  closeSync(fd);
+}
+const largeFixturePath = join(
+  tmpdir(),
+  `framecode-stage6-large-${process.pid}.framecode.json`,
+);
+const largeFixtureSource =
+  'composition("Stage6Large").duration(6)\nvideo("big").at(0).for(2).source(' +
+  JSON.stringify(largeVideoPath) +
+  ").sourceDuration(2)";
+writeFileSync(
+  largeFixturePath,
+  JSON.stringify(
+    {
+      format: "framecode-project",
+      version: 1,
+      source: largeFixtureSource,
+      lastValid: largeFixtureSource,
     },
     null,
     2,
@@ -545,6 +654,210 @@ try {
             }
           })()`,
         );
+        // Stage 6: the media half of the asset pipeline, driven end to end.
+        // A Range request on an unauthorized media path must still be 403
+        // (authorization runs before byte accounting); once the media
+        // project is open, ranges are served with the spec headers, HEAD
+        // mirrors GET, unsatisfiable ranges are 416, the media project
+        // saves with its clip intact, and probing junk bytes fails with a
+        // structured error instead of crashing.
+        await evaluate(
+          "mediaRange",
+          `(async () => {
+            const token = window.framecodeDesktop.assetToken;
+            const base = location.origin + "/assets/?path=";
+            const enc = encodeURIComponent;
+            const invoke = window.__TAURI__.core.invoke;
+            const video = ${JSON.stringify(testVideoPath)};
+            const url = base + enc(video) + "&token=" + token;
+            const steps = {};
+            const get = async (init) => {
+              try {
+                const response = await fetch(url, init);
+                const body = await response.arrayBuffer();
+                return {
+                  status: response.status,
+                  length: body.byteLength,
+                  contentRange: response.headers.get("content-range"),
+                  acceptRanges: response.headers.get("accept-ranges"),
+                  contentLength: response.headers.get("content-length"),
+                };
+              } catch (error) {
+                return { status: "fetch-error", error: String(error) };
+              }
+            };
+            try {
+              steps.beforeOpen = (await get({ headers: { Range: "bytes=0-1023" } })).status;
+              const loaded = await invoke("project_open_recent", {
+                path: ${JSON.stringify(mediaFixturePath)},
+              });
+              steps.scanOpen = loaded?.project?.source === ${JSON.stringify(mediaFixtureSource)};
+              steps.partial = await get({ headers: { Range: "bytes=0-1023" } });
+              steps.head = await get({ method: "HEAD", headers: { Range: "bytes=0-1023" } });
+              steps.suffix = await get({ headers: { Range: "bytes=-16" } });
+              steps.unsatisfiable = (await get({ headers: { Range: "bytes=99999-" } })).status;
+              steps.full = (await get({})).status;
+              const saved = await invoke("project_save", {
+                project: { ...loaded.project },
+                saveAs: false,
+              });
+              steps.savedPath = saved?.path ?? null;
+              try {
+                await invoke("probe_media", { path: video });
+                steps.probe = "MISSING — non-media bytes were accepted";
+              } catch (error) {
+                steps.probe = error?.message ?? String(error);
+              }
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            await invoke("recents_remove", { path: ${JSON.stringify(mediaFixturePath)} });
+            return JSON.stringify(steps);
+          })()`,
+        );
+        // Stage 6 decode proof: open the decodable fixture through the real
+        // Home -> Recents flow, then drive the transport slider. The canvas
+        // center pixel must be red at 0.5 s and blue at 1.5 s, which means
+        // the range-served MP4 decoded, the pool seeked to the real source
+        // time, and the frame was painted on the app-origin canvas.
+        await evaluate(
+          "mediaDecode",
+          `(async () => {
+            const invoke = window.__TAURI__.core.invoke;
+            const fixture = ${JSON.stringify(decodeFixturePath)};
+            const steps = {};
+            const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            try {
+              // Seed Recents and authorize the fixture's scanned asset path.
+              await invoke("project_open_recent", { path: fixture });
+              steps.probe = await invoke("probe_media", {
+                path: ${JSON.stringify(decodeVideoPath)},
+              });
+              // Reload the Home list through the real settings handler
+              // without changing the value: opening the dialog fills the
+              // persisted value, and dispatching change runs
+              // changeSetting -> renderRecents.
+              document.getElementById("homeSettings").click();
+              const max = document.getElementById("settingsMaxRecents");
+              max.dispatchEvent(new Event("change"));
+              const settingsDialog = document.getElementById("settingsDialog");
+              let open = null;
+              for (let i = 0; i < 100 && !open; i += 1) {
+                await wait(50);
+                open = [...document.querySelectorAll(".recent-open")].find(
+                  (button) => button.textContent.includes(fixture),
+                );
+              }
+              if (settingsDialog.open) settingsDialog.close();
+              if (!open)
+                throw new Error("the fixture never appeared in Recents");
+              open.click();
+              for (let i = 0; i < 100; i += 1) {
+                if (document.body.dataset.stage === "editor") break;
+                await wait(50);
+              }
+              steps.stage = document.body.dataset.stage;
+              steps.provenance = document.getElementById("mediaProvenance").hidden
+                ? "hidden"
+                : document.getElementById("mediaProvenance").textContent;
+              const canvas = document.getElementById("canvas");
+              const ctx = canvas.getContext("2d");
+              const center = () => {
+                const { data } = ctx.getImageData(
+                  Math.floor(canvas.width / 2),
+                  Math.floor(canvas.height / 2),
+                  1,
+                  1,
+                );
+                return { r: data[0], g: data[1], b: data[2] };
+              };
+              const seek = document.getElementById("seek");
+              const seekAndRead = async (time, test) => {
+                seek.value = String(time);
+                seek.dispatchEvent(new Event("input"));
+                let pixel = center();
+                for (let i = 0; i < 100; i += 1) {
+                  await wait(50);
+                  pixel = center();
+                  if (test(pixel)) return pixel;
+                }
+                return pixel;
+              };
+              steps.blue = await seekAndRead(
+                1.5,
+                (p) => p.b > 120 && p.b > p.r + 80 && p.b > p.g + 80,
+              );
+              steps.red = await seekAndRead(
+                0.5,
+                (p) => p.r > 120 && p.r > p.g + 80 && p.r > p.b + 80,
+              );
+              await invoke("recents_remove", { path: fixture });
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            return JSON.stringify(steps);
+          })()`,
+        );
+        // Stage 6 memory bound: a 512 MiB clip behind an authorized
+        // project, requested the way a media element asks (`bytes=0-`).
+        // The response must be an 8 MiB 206 prefix, and the app process
+        // must not grow by anything close to the file size.
+        const workingSet = () => {
+          const { status, stdout } = spawnSync(
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `(Get-Process -Id ${app.pid}).WorkingSet64`,
+            ],
+            { encoding: "utf8", timeout: 20000 },
+          );
+          const value = status === 0 ? Number(String(stdout).trim()) : NaN;
+          return Number.isFinite(value) ? value : null;
+        };
+        const memoryBefore = workingSet();
+        await evaluate(
+          "mediaMemory",
+          `(async () => {
+            const token = window.framecodeDesktop.assetToken;
+            const invoke = window.__TAURI__.core.invoke;
+            const steps = {};
+            try {
+              await invoke("project_open_recent", {
+                path: ${JSON.stringify(largeFixturePath)},
+              });
+              const response = await fetch(
+                location.origin +
+                  "/assets/?path=" +
+                  encodeURIComponent(${JSON.stringify(largeVideoPath)}) +
+                  "&token=" +
+                  token,
+                { headers: { Range: "bytes=0-" } },
+              );
+              const body = await response.arrayBuffer();
+              steps.status = response.status;
+              steps.length = body.byteLength;
+              steps.contentRange = response.headers.get("content-range");
+              steps.contentLength = response.headers.get("content-length");
+              steps.acceptRanges = response.headers.get("accept-ranges");
+            } catch (error) {
+              steps.error = error?.message ?? String(error);
+            }
+            await invoke("recents_remove", {
+              path: ${JSON.stringify(largeFixturePath)},
+            });
+            return JSON.stringify(steps);
+          })()`,
+        );
+        const memoryAfter = workingSet();
+        results.memory = {
+          before: memoryBefore,
+          after: memoryAfter,
+          growth:
+            memoryBefore !== null && memoryAfter !== null
+              ? memoryAfter - memoryBefore
+              : null,
+        };
         // Stage 5 window lifecycle, driven through the real Rust
         // commands: the dirty/title state accepts updates, the stage
         // validation rejects the bogus value like the Electron handler
@@ -810,6 +1123,163 @@ try {
     `relink=${checks.relink}`,
   );
 
+  // Stage 6 media pipeline: ranges, authorization order, media save, probe.
+  let mediaRange = null;
+  try {
+    mediaRange = JSON.parse(checks.mediaRange ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "media range probe ran without errors",
+    !!mediaRange && !mediaRange.error,
+    `steps=${checks.mediaRange}`,
+  );
+  if (mediaRange && !mediaRange.error) {
+    expect(
+      "a Range request on unauthorized media still receives HTTP 403",
+      mediaRange.beforeOpen === 403,
+      `beforeOpen=${JSON.stringify(mediaRange.beforeOpen)}`,
+    );
+    expect(
+      "the media project scan authorized the video clip",
+      mediaRange.scanOpen === true,
+      `scanOpen=${JSON.stringify(mediaRange.scanOpen)}`,
+    );
+    expect(
+      "a byte range returns 206 with Content-Range, Accept-Ranges and exact bytes",
+      mediaRange.partial?.status === 206 &&
+        mediaRange.partial.length === 1024 &&
+        mediaRange.partial.contentRange === "bytes 0-1023/4096" &&
+        mediaRange.partial.acceptRanges === "bytes" &&
+        mediaRange.partial.contentLength === "1024",
+      `partial=${JSON.stringify(mediaRange.partial)}`,
+    );
+    expect(
+      "HEAD mirrors the range headers without a body",
+      mediaRange.head?.status === 206 &&
+        mediaRange.head.length === 0 &&
+        mediaRange.head.contentLength === "1024",
+      `head=${JSON.stringify(mediaRange.head)}`,
+    );
+    expect(
+      "a suffix range resolves from the end of the file",
+      mediaRange.suffix?.status === 206 &&
+        mediaRange.suffix.length === 16 &&
+        mediaRange.suffix.contentRange === "bytes 4080-4095/4096",
+      `suffix=${JSON.stringify(mediaRange.suffix)}`,
+    );
+    expect(
+      "an unsatisfiable range receives 416",
+      mediaRange.unsatisfiable === 416,
+      `unsatisfiable=${JSON.stringify(mediaRange.unsatisfiable)}`,
+    );
+    expect(
+      "a range-less request still serves the whole file",
+      mediaRange.full === 200,
+      `full=${JSON.stringify(mediaRange.full)}`,
+    );
+    expect(
+      "a media project saves without dropping its video clip",
+      mediaRange.savedPath === mediaFixturePath,
+      `savedPath=${JSON.stringify(mediaRange.savedPath)}`,
+    );
+    expect(
+      "probing non-media bytes fails with a structured error",
+      typeof mediaRange.probe === "string" &&
+        /Unreadable media container|Could not read the media duration/.test(
+          mediaRange.probe,
+        ),
+      `probe=${JSON.stringify(mediaRange.probe)}`,
+    );
+  }
+  let savedMediaProject = null;
+  try {
+    savedMediaProject = JSON.parse(readFileSync(mediaFixturePath, "utf8"));
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "the saved media project keeps the video clip in source and lastValid",
+    savedMediaProject?.source === mediaFixtureSource &&
+      savedMediaProject?.lastValid === mediaFixtureSource,
+    `onDisk=${JSON.stringify(savedMediaProject)}`,
+  );
+
+  // Stage 6 decode proof: the real UI opened the decodable fixture through
+  // Recents, the probe read its real container, the C4 provenance is shown,
+  // and the transport painted the red then blue source frames.
+  let mediaDecode = null;
+  try {
+    mediaDecode = JSON.parse(checks.mediaDecode ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  expect(
+    "the decodable media project opened through the real Recents flow",
+    !!mediaDecode &&
+      !mediaDecode.error &&
+      mediaDecode.stage === "editor" &&
+      mediaDecode.provenance === "Media · requires Framecode 0.4+",
+    `steps=${checks.mediaDecode}`,
+  );
+  expect(
+    "probing the real MP4 reports its duration and display size",
+    !!mediaDecode &&
+      Math.abs((mediaDecode.probe?.duration ?? 0) - 2) < 0.15 &&
+      mediaDecode.probe?.width === 160 &&
+      mediaDecode.probe?.height === 90,
+    `probe=${JSON.stringify(mediaDecode?.probe)}`,
+  );
+  expect(
+    "seeking to 1.5 s paints the blue source frame",
+    !!mediaDecode &&
+      mediaDecode.blue?.b > 120 &&
+      mediaDecode.blue.b > mediaDecode.blue.r + 80 &&
+      mediaDecode.blue.b > mediaDecode.blue.g + 80,
+    `blue=${JSON.stringify(mediaDecode?.blue)}`,
+  );
+  expect(
+    "seeking back to 0.5 s paints the red source frame",
+    !!mediaDecode &&
+      mediaDecode.red?.r > 120 &&
+      mediaDecode.red.r > mediaDecode.red.g + 80 &&
+      mediaDecode.red.r > mediaDecode.red.b + 80,
+    `red=${JSON.stringify(mediaDecode?.red)}`,
+  );
+
+  // Stage 6 memory bound: `bytes=0-` on a 512 MiB file is a bounded prefix,
+  // and the app process does not grow by the file size.
+  let mediaMemory = null;
+  try {
+    mediaMemory = JSON.parse(checks.mediaMemory ?? "null");
+  } catch {
+    // Reported as the failure below.
+  }
+  const memory = checks.memory ?? {};
+  console.log(
+    `512 MiB range response: status=${mediaMemory?.status} bytes=${mediaMemory?.length} ` +
+      `contentRange=${mediaMemory?.contentRange} app growth=` +
+      `${memory.growth === null || memory.growth === undefined ? "unknown" : (memory.growth / (1024 * 1024)).toFixed(1) + " MiB"}`,
+  );
+  expect(
+    "an open-ended range on a 512 MiB clip returns a bounded 8 MiB 206 prefix",
+    !!mediaMemory &&
+      !mediaMemory.error &&
+      mediaMemory.status === 206 &&
+      mediaMemory.length === 8 * 1024 * 1024 &&
+      mediaMemory.contentRange === "bytes 0-8388607/536870912" &&
+      mediaMemory.contentLength === "8388608" &&
+      mediaMemory.acceptRanges === "bytes",
+    `mediaMemory=${checks.mediaMemory}`,
+  );
+  expect(
+    "serving that range does not grow the app process by the file size",
+    typeof memory.growth === "number" &&
+      memory.growth < 192 * 1024 * 1024,
+    `memory=${JSON.stringify(memory)}`,
+  );
+
   // Stage 5 window lifecycle: every command answered, the bogus stage was
   // rejected with the Electron validation message.
   let lifecycleOps = null;
@@ -873,7 +1343,17 @@ try {
   spawn("taskkill", ["/PID", String(app.pid), "/T", "/F"]);
   await sleep(1000);
   // The smoke fixtures are only scaffolding.
-  for (const file of [fixturePath, testImgPath, unauthorizedImgPath, assetFixturePath]) {
+  for (const file of [
+    fixturePath,
+    testImgPath,
+    unauthorizedImgPath,
+    assetFixturePath,
+    testVideoPath,
+    mediaFixturePath,
+    decodeFixturePath,
+    largeVideoPath,
+    largeFixturePath,
+  ]) {
     try {
       unlinkSync(file);
     } catch {

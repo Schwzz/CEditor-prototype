@@ -22,16 +22,22 @@ import {
 import { createEditor } from "./editor.mjs";
 import { defaultPosition } from "./geometry.mjs";
 import { ImageCache } from "./renderer.mjs";
+import { VideoPool } from "./media.mjs";
 import { createPreview } from "./preview.mjs";
 import { createLayerLabel, renameClip } from "./layers.mjs";
 import { createTimeline } from "./timeline.mjs";
 import { mountGuide } from "./guide.mjs";
+import { MEDIA_PROVENANCE_MESSAGE } from "../core/project-format.mjs";
 
 const $ = (id) => document.getElementById(id),
   desktop = window.framecodeDesktop;
 if (!desktop) throw new Error("Launch Framecode from the desktop application.");
 const store = new DocumentStore();
 const imageCache = new ImageCache();
+// Stage 6: the video decoders that follow the composition clock. Like the
+// image cache, a load/seek completion schedules a repaint so a paused
+// transport shows the frame it landed on.
+const videoPool = new VideoPool();
 // Phase 2.1: the app launches into the Home screen; entering the editor is
 // an explicit user action (New/Open/restore).
 document.body.dataset.stage = "home";
@@ -45,6 +51,9 @@ function enterEditor() {
   desktop.setStage("editor").catch(() => {});
 }
 imageCache.subscribe(() => {
+  if (!playing) scheduleRender();
+});
+videoPool.subscribe(() => {
   if (!playing) scheduleRender();
 });
 
@@ -139,8 +148,13 @@ function setPlaying(value) {
     `<svg><use href="#i-${playing ? "pause" : "play"}"/></svg>`;
   $("pausedChip").hidden = playing;
   if (playing) {
+    // Video elements follow the composition clock: seek any that are
+    // outside tolerance, then let them run between frames.
+    videoPool.playActive(store.model, current);
     previous = performance.now();
     frameHandle = requestAnimationFrame(frame);
+  } else {
+    videoPool.pauseAll();
   }
 }
 function frame(now) {
@@ -156,13 +170,20 @@ function frame(now) {
     }
   }
   updateTime();
+  if (playing) videoPool.syncActive(store.model, current);
   preview.draw();
   if (playing) frameHandle = requestAnimationFrame(frame);
 }
-function seek(time) {
+async function seek(time) {
   setPlaying(false);
   current = time;
   updateTime();
+  const target = current;
+  // Await the real frame before painting: a paused transport must show
+  // the frame it landed on, not the previous one. A newer seek wins — its
+  // paint is the truthful one.
+  await videoPool.seekActive(store.model, target);
+  if (current !== target) return;
   preview.draw();
 }
 function selectClip(
@@ -171,9 +192,9 @@ function selectClip(
 ) {
   const clip = store.model.clips.find((clip) => clip.id === id);
   if (clip && reveal && (current < clip.at || current >= clip.at + clip.for)) {
-    setPlaying(false);
-    current = clip.at + Math.min(0.7, clip.for / 2);
-    updateTime();
+    // Selecting a clip moves the transport; seeking every active video
+    // element is what makes the preview show that clip's real frame.
+    void seek(clip.at + Math.min(0.7, clip.for / 2));
   }
   if (!preserve || !store.selectedIds.includes(id))
     store.select(id, { toggle });
@@ -212,6 +233,7 @@ const preview = createPreview($("canvas"), {
   onCommit: commit,
   onError: toast,
   imageCache,
+  videoCache: videoPool,
 });
 const timeline = createTimeline({
   store,
@@ -405,6 +427,12 @@ function render(full = true) {
   renderSelection();
   $("projectName").textContent = store.model.name;
   $("previewLabel").textContent = store.model.name.toUpperCase();
+  // C4: the format stays v1, but media statements need the 0.4+ engine.
+  const hasMedia = store.model.clips.some(
+    (clip) => clip.type === "video" || clip.type === "audio",
+  );
+  $("mediaProvenance").hidden = !hasMedia;
+  $("mediaProvenance").textContent = MEDIA_PROVENANCE_MESSAGE;
   $("lineCount").textContent = store.source.split("\n").length + " lines";
   $("clipCount").textContent = store.model.clips.length + " clips";
   $("durationLabel").textContent = store.model.duration.toFixed(1) + "s";
@@ -603,11 +631,73 @@ async function runImportImage() {
   const nextSource = store.source.trimEnd() + `\nimage(${JSON.stringify(name)}).at(${Math.floor(current)}).for(5).source(${JSON.stringify(imported)})`;
   commit(nextSource, "Import image");
 }
+
+// Stage 6: import video picks a file (authorizing it in Rust), probes the
+// container for duration, and writes a complete `video(...)` clip so the
+// source never lies about the media it references.
+async function runImportVideo() {
+  if (fileBusy || booting) return;
+  let imported;
+  try {
+    imported = await desktop.importVideo();
+  } catch (error) {
+    toast(errorMessage(error));
+    return;
+  }
+  if (!imported) return;
+  let probe;
+  try {
+    probe = await desktop.probeMedia(imported);
+  } catch (error) {
+    toast(errorMessage(error));
+    return;
+  }
+  const duration = Number(probe?.duration);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    toast("Could not read the video duration.");
+    return;
+  }
+  const baseName =
+    imported.split(/[/\\]/).pop().split(".")[0].replace(/[^\w]/g, "_") ||
+    "Video";
+  let name = baseName;
+  let i = 1;
+  while (store.model.clips.some((c) => c.id === name)) {
+    name = `${baseName}_${i++}`;
+  }
+  // A clip must stay inside the composition: start at the playhead, take
+  // up to five seconds of source, and never run past the end.
+  const at = Math.max(
+    0,
+    Math.min(Math.round(current * 100) / 100, store.model.duration - 1 / 30),
+  );
+  const length =
+    Math.round(Math.min(5, duration, store.model.duration - at) * 100) / 100;
+  if (!(length > 0)) {
+    toast("This composition is too short for a video clip.");
+    return;
+  }
+  // `.sourceDuration()` is author-declared (the engine caps it at 3600 s);
+  // import writes the probed duration so the window is truthful.
+  const sourceDuration = Math.min(
+    3600,
+    Math.max(length, Math.round(duration * 1000) / 1000),
+  );
+  const nextSource =
+    store.source.trimEnd() +
+    `\nvideo(${JSON.stringify(name)}).at(${at}).for(${length}).source(${JSON.stringify(imported)}).sourceDuration(${sourceDuration})`;
+  if (commit(nextSource, "Import video", name)) {
+    selectClip(name, { reveal: true });
+    // C4: tell the author the project is now 0.4+ only.
+    toast(`${MEDIA_PROVENANCE_MESSAGE} · older builds cannot open this project.`);
+  }
+}
 $("reset").onclick = () => {
   setPlaying(false);
   commit(DEFAULT_SOURCE, "Reset example", null);
   current = 2;
   imageCache.clearAll();
+  videoPool.clear();
 };
 // The code panel is a secondary surface: the video-first workspace shows the
 // preview, inspector, and timeline; code opens via the rail, the View menu,
@@ -923,6 +1013,7 @@ async function adoptLoadedProject(loaded) {
   filePath = loaded.path;
   store.load(loaded.project);
   imageCache.clearAll();
+  videoPool.clear();
   const cleared = await clearRecoveryAfterAdoption();
   $("saveStatus").textContent = cleared
     ? "Project opened locally"
@@ -960,6 +1051,7 @@ async function fileCommand(command) {
       filePath = null;
       store.load({ source: DEFAULT_SOURCE, lastValid: DEFAULT_SOURCE });
       imageCache.clearAll();
+      videoPool.clear();
       const cleared = await clearRecoveryAfterAdoption();
       $("saveStatus").textContent = cleared
         ? "New local project"
@@ -1084,6 +1176,10 @@ async function command(name) {
     }
     if (name === "importImage") {
       await runImportImage();
+      return;
+    }
+    if (name === "importVideo") {
+      await runImportVideo();
       return;
     }
     if (name === "reset") {
@@ -1272,6 +1368,7 @@ async function boot() {
         $("restoreRecovery").onclick = async () => {
           store.load(recovery, { dirty: true });
           imageCache.clearAll();
+          videoPool.clear();
           $("recoveryDialog").close();
           $("saveStatus").textContent =
             "Recovered draft · save as a new project";

@@ -74,6 +74,11 @@ pub trait Dialogs {
     /// The Import image dialog's chosen path, or `None` on cancel. The
     /// filter matches the Electron `image:import` handler's exactly.
     fn pick_image(&self) -> Option<String>;
+    /// The Stage 6 media picker: `kind` is "video" or "audio" and selects
+    /// the extension filter. Fixtures default to cancel.
+    fn pick_media(&self, _kind: &str) -> Option<String> {
+        None
+    }
     /// The relink consent dialog: `true` only when the user affirms
     /// granting the listed image paths to this window (the Electron
     /// "Relink images" button; canceling or "Skip" is a refusal).
@@ -142,22 +147,43 @@ impl Dialogs for TauriDialogs {
             .map(|path| path.to_string_lossy().into_owned())
     }
 
+    fn pick_media(&self, kind: &str) -> Option<String> {
+        use tauri_plugin_dialog::DialogExt;
+        let (title, filter_name, extensions): (&str, &str, &[&str]) = match kind {
+            "video" => ("Import video", "Videos", &["mp4", "mov", "m4v", "webm"]),
+            "audio" => (
+                "Import audio",
+                "Audio",
+                &["mp3", "wav", "m4a", "aac", "flac", "ogg"],
+            ),
+            _ => return None,
+        };
+        self.app
+            .dialog()
+            .file()
+            .set_title(title)
+            .add_filter(filter_name, extensions)
+            .blocking_pick_file()
+            .and_then(|file| file.into_path().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
     fn confirm_relink(&self, candidates: &[String]) -> bool {
         use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
         // The Electron dialog's `detail` lists the exact paths the window
         // would gain access to; the message dialog folds it into the body.
         let message = format!(
-            "Relink the images used by the recovered draft? Granting access \
-             lets this draft display them.\n\nFiles that will be accessible \
+            "Relink the media used by the recovered draft? Granting access \
+             lets this draft display it.\n\nFiles that will be accessible \
              to this window:\n{}",
             candidates.join("\n")
         );
         self.app
             .dialog()
             .message(message)
-            .title("Relink recovered images")
+            .title("Relink recovered media")
             .buttons(MessageDialogButtons::OkCancelCustom(
-                "Relink images".into(),
+                "Relink media".into(),
                 "Skip".into(),
             ))
             .blocking_show()

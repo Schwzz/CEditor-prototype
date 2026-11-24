@@ -127,3 +127,97 @@ image("Test Image").at(1).for(2).source("test.jpg").position(100, 200)`;
   assert.equal(m.clips[0].type, "image");
   assert.deepEqual(m.clips[0].position, [100, 200]);
 });
+
+test("video clips carry a media source window and default fit", () => {
+  const m = compile(
+    'composition("Media").duration(10)\nvideo("B-roll").at(1).for(4).source("C:/clips/a.mp4").sourceDuration(30)',
+  );
+  const clip = m.clips[0];
+  assert.equal(clip.type, "video");
+  assert.equal(clip.source, "C:/clips/a.mp4");
+  assert.equal(clip.fit, "contain");
+  assert.equal(clip.sourceAt, 0);
+  assert.equal(clip.sourceDuration, 30);
+  assert.equal(clip.hasSourceWindow, true, "media always has a source window");
+  assert.equal(clip.gain, 1);
+});
+
+test("media clips may declare up to one hour of source while images stay capped at 60", () => {
+  const video = compile(
+    'composition("Media").duration(10)\nvideo("Long").at(0).for(10).source("C:/a.mp4").sourceDuration(3600)',
+  );
+  assert.equal(video.clips[0].sourceDuration, 3600);
+  assert.throws(
+    () =>
+      compile(
+        'composition("Media").duration(10)\nvideo("Long").at(0).for(10).source("C:/a.mp4").sourceDuration(3600.5)',
+      ),
+    /Clip exceeds its animation source window\./,
+  );
+  assert.throws(
+    () =>
+      compile(
+        'composition("Images").duration(10)\nimage("Still").at(0).for(10).source("a.png").sourceDuration(61)',
+      ),
+    /Clip exceeds its animation source window\./,
+  );
+});
+
+test("audio clips support gain and reject visual-only properties", () => {
+  const m = compile(
+    'composition("Sound").duration(10)\naudio("Score").at(0).for(10).source("C:/audio/score.mp3").gain(0.4)',
+  );
+  const clip = m.clips[0];
+  assert.equal(clip.type, "audio");
+  assert.equal(clip.gain, 0.4);
+  assert.equal(clip.hasSourceWindow, true);
+  assert.equal(clip.opacity, 1, "audio keeps the inert default but cannot set it");
+  for (const method of ['scale(2)', 'rotation(15)', 'position(1, 2)', 'opacity(0.5)', 'fit("cover")']) {
+    assert.throws(
+      () =>
+        compile(
+          `composition("Sound").duration(10)\naudio("Score").at(0).for(10).source("C:/audio/score.mp3").${method}`,
+        ),
+      /Unsupported or repeated method/,
+      method,
+    );
+  }
+  assert.throws(
+    () => compile('composition("Sound").duration(10)\nvideo("V").at(0).for(5).source("a.mp4").gain(1)'),
+    /Unsupported or repeated method/,
+  );
+});
+
+test("media clips require a source and validate gain like fit", () => {
+  assert.throws(
+    () => compile('composition("Media").duration(10)\nvideo("V").at(0).for(5)'),
+    /Video clips require a source path\./,
+  );
+  assert.throws(
+    () => compile('composition("Media").duration(10)\naudio("A").at(0).for(5)'),
+    /Audio clips require a source path\./,
+  );
+  assert.throws(
+    () => compile('composition("Media").duration(10)\nvideo("V").at(0).for(5).source("a.mp4").fit("stretch")'),
+    /Fit supports "contain", "cover", or "fill"\./,
+  );
+  for (const gain of [-0.1, 2.1, '"loud"']) {
+    assert.throws(
+      () =>
+        compile(
+          `composition("Sound").duration(10)\naudio("A").at(0).for(5).source("a.mp3").gain(${gain})`,
+        ),
+      /Gain must be between 0 and 2\./,
+    );
+  }
+});
+
+test("media clips use sourceAt as the trim offset without moving on end trim", () => {
+  const m = compile(
+    'composition("Media").duration(20)\nvideo("V").at(2).for(5).source("a.mp4").sourceAt(10).sourceDuration(30)',
+  );
+  const clip = m.clips[0];
+  assert.equal(clip.sourceAt, 10);
+  assert.equal(clip.sourceDuration, 30);
+  assert.equal(clip.hasSourceWindow, true);
+});

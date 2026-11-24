@@ -136,3 +136,30 @@ test("a boundary no-op preserves group selection for the next inward movement", 
     [0.1, 4.1],
   );
 });
+
+// C3: clipboard payloads go through `commit`, which compiles, so a build
+// that cannot parse media refuses the paste instead of adopting a
+// half-media composition. This build accepts the same payload and keeps
+// the `video()` statement intact.
+test("C3: a media clipboard payload keeps its media statement or is refused atomically", () => {
+  const media =
+    'composition("Media").duration(12)\nvideo("a").at(1).for(4).source("C:/clips/a.mp4").sourceDuration(30)';
+  const store = new DocumentStore(media, { lastValid: media });
+  const payload = ops.copyClip(media, "a");
+  const pasted = ops.pasteClip(media, payload, 0);
+  store.commit(pasted.source, "Paste clip", pasted.id);
+  assert.equal(store.model.clips.length, 2);
+  assert.ok(store.model.clips.every((clip) => clip.type === "video"));
+  assert.match(store.source, /^video\("a"\)\./m);
+  // A statement the engine cannot parse (what an older build would see for
+  // media) is rejected at paste, and the document keeps its last good text.
+  const unsupported = JSON.stringify({
+    ...JSON.parse(payload),
+    statement: 'video("b").at(0).for(1).source("C:/b.mp4").bogus(1)',
+  });
+  assert.throws(
+    () => ops.pasteClip(store.source, unsupported, 0),
+    /Unsupported or repeated method/,
+  );
+  assert.equal(store.source, pasted.source);
+});

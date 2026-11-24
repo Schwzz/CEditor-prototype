@@ -99,3 +99,57 @@ test("image clips persist in version1 projects", () => {
   const value = { ...project(), source, lastValid: source };
   assert.deepEqual(decodeProject(encodeProject(value)), value);
 });
+
+const MEDIA_SOURCE =
+  'composition("Media").duration(10)\nvideo("B-roll").at(0).for(5).source("C:/clips/a.mp4").sourceDuration(30)';
+test("saving media with a media-free lastValid is refused with the compatibility message", () => {
+  const unsafe = { ...project(), source: MEDIA_SOURCE + "\nbroken(", lastValid: DEFAULT_SOURCE };
+  assert.throws(
+    () => encodeProject(unsafe),
+    /This project uses media, but its last valid composition does not\. Saving is blocked: an older Framecode version could open it and silently drop the media\. Fix the composition error, then save again\./,
+  );
+  // Opening such a file is still allowed: the decode path canonicalizes
+  // without the write guard, so the user can repair and save.
+  assert.deepEqual(decodeProject(JSON.stringify(unsafe)), unsafe);
+  // Media in both source and lastValid is a valid save.
+  const safe = { ...project(), source: MEDIA_SOURCE, lastValid: MEDIA_SOURCE };
+  assert.deepEqual(decodeProject(encodeProject(safe)), safe);
+});
+test("audio and commented media lines follow the same write invariant", () => {
+  const audio = { ...project(), source: MEDIA_SOURCE.replace("video", "audio"), lastValid: DEFAULT_SOURCE };
+  assert.throws(() => encodeProject(audio), /Saving is blocked/);
+  const commented = {
+    ...project(),
+    source: "// video(\"Ghost\").at(0).for(5).source(\"C:/ghost.mp4\")\n" + DEFAULT_SOURCE,
+    lastValid: DEFAULT_SOURCE,
+  };
+  assert.deepEqual(decodeProject(encodeProject(commented)), commented);
+});
+test("a newer project version reports the update message, not the generic one", () => {
+  assert.throws(
+    () => decodeProject(JSON.stringify({ ...project(), version: 2 })),
+    /This project was created by a newer version of Framecode\. Update Framecode to open it\./,
+  );
+});
+test("C4 provenance names the 0.4 requirement in the import flow and preview meta", async () => {
+  const { MEDIA_PROVENANCE_MESSAGE } = await import("../src/core/project-format.mjs");
+  assert.equal(MEDIA_PROVENANCE_MESSAGE, "Media · requires Framecode 0.4+");
+  const html = await readFile(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="mediaProvenance"/);
+  const app = await readFile(new URL("../src/renderer/app.mjs", import.meta.url), "utf8");
+  // The preview meta and the import toast both surface the same constant.
+  assert.ok(
+    (app.match(/MEDIA_PROVENANCE_MESSAGE/g) || []).length >= 3,
+    "the message is imported, rendered in the preview meta, and toasted on import",
+  );
+});
+test("the document CSP permits media from the app origin", async () => {
+  // Regression guard for the Stage 6 decode smoke: with `default-src 'none'`
+  // and no media-src, Chromium refuses every media element load (the element
+  // reports "Media load rejected by URL safety check") even though fetch() to
+  // the same authorized URL succeeds.
+  const html = await readFile(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+  const csp =
+    html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)?.[1] ?? "";
+  assert.match(csp, /(?:^|;\s*)media-src 'self'(?:;|$)/);
+});
