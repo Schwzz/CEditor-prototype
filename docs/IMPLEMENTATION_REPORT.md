@@ -1,5 +1,16 @@
 # Windows prototype implementation report
 
+## 0.4.0 media engine M1 — 23 November 2026
+
+The first media slice adds `video()` clips end to end: import, probing, authorization, range serving, timeline lanes, and real decoded-frame rendering.
+
+- **Project compatibility.** The document format stays version 1. A v1 file whose composition declares `video()` (or `audio()`) is intentionally unreadable by 0.3 builds: they stop at `Line N: Unknown function: video.` and adopt nothing, so they cannot silently rewrite the project without its media. The preview meta and the import flow show "Media · requires Framecode 0.4+". Saving is additionally refused when the current source declares media but `lastValid` does not, because that is exactly the state an older build could adopt and overwrite.
+- **Import and probing.** "Import video…" (`Ctrl+Shift+I`) picks a file through the native dialog, authorizes it in Rust, probes the container headers for duration and display size, and writes a complete `video(...).sourceDuration(...)` clip.
+- **Serving.** Media is served only on the app origin after the same authorization gate as images, with HTTP range support (206/416/HEAD) so `<video>` can seek without loading the whole file. Open-ended ranges are capped at 8 MiB per response, so a large file cannot be pulled into memory in one request; the document CSP allows `media-src 'self'` because `default-src 'none'` otherwise makes Chromium reject every media load.
+- **Rendering.** One `<video>` per active clip (capped at four, least-recently-used released), slaved to the composition clock: seeks await `seeked`, playback corrects drift only beyond 1.5 frames, and the canvas paints the real decoded frame with the image fit rules. Undecodable or missing files show a truthful DECODING / VIDEO NOT FOUND placeholder.
+
+Audio clips are accepted by the engine and the bridge but playback is not part of M1.
+
 ## 0.3.0 editing pass — 28 October 2026
 
 The authorized first three feature groups are Timeline, Layers and Preview.
